@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-// Originally developed by Telicent Ltd.; subsequently adapted and maintained
-// for the DSI REST Federator.
+// Originally developed by Telicent Ltd.; subsequently adapted, enhanced,
+// and maintained by the National Digital Twin Programme.
 package org.dsi.dpn.common.utils;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -14,6 +14,7 @@ import org.dsi.dpn.common.service.idp.IdpTokenServiceClientSecretImpl;
 import org.dsi.dpn.common.service.idp.IdpTokenServiceMtlsImpl;
 import org.dsi.dpn.common.service.idp.IdpTokenServicePrivateJwtImpl;
 import org.dsi.dpn.common.service.secret.SecretProvider;
+import org.dsi.dpn.common.service.secret.VaultTlsSupport;
 
 /**
  * Builds the {@link IdpTokenService} matching the configured client-authentication
