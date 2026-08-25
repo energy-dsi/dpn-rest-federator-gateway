@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+    Local Logback configuration for dpn-rest-federator-gateway.
+
+    IMPORTANT: This file deliberately shadows the logback.xml bundled inside
+    federator-1.2.11.jar. The jar's config references OpenTelemetry appender
+    classes (io.opentelemetry.instrumentation.logback.mdc.v1_0 /
+    appender.v1_0) that are NOT on this application's classpath, which causes
+    Spring Boot startup to fail with:
+        "Logback configuration error detected ... ClassNotFoundException"
+
+    Because src/main/resources is compiled to target/classes (and BOOT-INF/classes
+    in the packaged jar), it precedes dependency jars on the classpath, so this
+    file is the one Logback and Spring Boot actually load.
+
+    The console pattern keeps the trace_id/span_id placeholders from the
+    original config; they simply render empty when no OTel MDC is populated,
+    so log lines stay format-compatible with the federator services.
+-->
+<configuration>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} [trace_id=%X{trace_id:-}, span_id=%X{span_id:-}] - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="ASYNC_CONSOLE" class="ch.qos.logback.classic.AsyncAppender">
+        <discardingThreshold>0</discardingThreshold>
+        <appender-ref ref="CONSOLE"/>
+        <neverBlock>true</neverBlock>
+    </appender>
+
+    <logger name="org.dsi.dpn.common" level="DEBUG"/>
+    <logger name="org.dsi.dpn.federator" level="DEBUG"/>
+
+    <root level="INFO">
+        <appender-ref ref="ASYNC_CONSOLE"/>
+    </root>
+
+</configuration>

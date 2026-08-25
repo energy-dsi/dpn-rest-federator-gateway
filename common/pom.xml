@@ -27,15 +27,13 @@
     -->
 
     <parent>
-        <groupId>org.springframework.boot</groupId>
-        <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
-        <relativePath/>
+        <groupId>org.dsi.dpn</groupId>
+        <artifactId>rest-federator-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <groupId>org.dsi.dpn</groupId>
     <artifactId>rest-federator-common</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
     <packaging>jar</packaging>
     <name>DSI REST Federator — Common (DPN platform plumbing)</name>
 
@@ -46,16 +44,6 @@
         is required.
     </description>
 
-    <properties>
-        <java.version>21</java.version>
-        <lombok.version>1.18.38</lombok.version>
-        <nimbus.version>10.4.2</nimbus.version>
-        <jedis.version>5.2.0</jedis.version>
-        <resilience4j.version>2.3.0</resilience4j.version>
-        <commons.lang3.version>3.18.0</commons.lang3.version>
-        <jspecify.version>1.0.0</jspecify.version>
-        <vault.driver.version>5.1.0</vault.driver.version>
-    </properties>
 
     <dependencies>
 

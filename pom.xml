@@ -6,48 +6,20 @@
     <modelVersion>4.0.0</modelVersion>
 
     <!--
-        REST Federator Server — standalone Spring Boot application.
+        DSI REST Federator — aggregator.
 
-        Depends on the existing federator jar for all common utilities:
-          GRPCUtils, PropertyUtil, SSLUtils, HttpClientFactoryUtils,
-          ManagementNodeDataHandler, ProducerConfigService,
-          InMemoryConfigurationStore, IdpTokenService (+ impls),
-          ProducerConfigDTO, ProductDTO, ConnectionProperties.
+        Builds nothing itself; it orders the modules and holds the dependency
+        versions they share. `mvn clean verify` here builds all five in
+        dependency order.
 
-        The federator jar has no Spring Boot — Spring Boot is introduced
-        here only. The federator jar must be installed to the local Maven
-        repository or be available from the team's artifact repository:
-          mvn install -f /path/to/federator/pom.xml
+          common/                  plumbing shared by the gateway and the client
+          server/                  the gateway (deployed as a container)
+          client/                  importable library jar for consumers
+          demo/demo-runner-server  example backend the gateway proxies to
+          demo/demo-runner-client  example consumer importing the client jar
 
-        Spring Boot version: 3.3.x (minimum 3.1 for SslBundles hot-reload)
-    -->
-
-    <groupId>org.dsi.dpn</groupId>
-    <artifactId>rest-federator-server</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
-    <packaging>jar</packaging>
-    <name>DSI REST Federator — Server (Producer-side)</name>
-
-    <description>
-        Producer-side REST Federator. Standalone Spring Boot application.
-        Generic authorizing reverse proxy: JWT validation, consumer
-        verification, method+path authorisation, then forwards the
-        authorized request to a configured backend. No business/example
-        code — see the demo/ folder for a runnable example backend+client.
-        Reuses federator-common utilities for token acquisition, mTLS,
-        and Management Node communication.
-    </description>
-
-    <!--
-        NOTE: this pom is NOT an aggregator (Maven requires packaging=pom for
-        that, and this module must stay packaging=jar so CI keeps resolving
-        target/*.jar for the server image). The sibling projects are built
-        independently by their own poms:
-          client/                    -> org.dsi.dpn:rest-federator-client
-          demo/demo-runner-server/   -> org.dsi.dpn:demo-runner-server
-          demo/demo-runner-client/   -> org.dsi.dpn:demo-runner-client
-        CI builds `client` first (mvn install) so demo-runner-client can
-        resolve rest-federator-client from the local repository.
+        The demo modules are illustrative only and are not part of the
+        federator; they have their own CI and CD pipelines.
     -->
 
     <parent>
@@ -57,128 +29,49 @@
         <relativePath/>
     </parent>
 
+    <groupId>org.dsi.dpn</groupId>
+    <artifactId>rest-federator-parent</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+    <name>DSI REST Federator — Parent</name>
+
+    <description>
+        Aggregator for the DSI REST Federator: the gateway, the consumer client
+        library, their shared plumbing, and the example demo applications.
+    </description>
+
+    <modules>
+        <module>common</module>
+        <module>server</module>
+        <module>client</module>
+        <module>demo/demo-runner-server</module>
+        <module>demo/demo-runner-client</module>
+    </modules>
+
     <properties>
         <java.version>21</java.version>
-        <rest.federator.common.version>1.0.0-SNAPSHOT</rest.federator.common.version>
         <springdoc.version>2.5.0</springdoc.version>
         <lombok.version>1.18.38</lombok.version>
+        <jacoco.version>0.8.11</jacoco.version>
+        <!-- Vendored plumbing (see common/VENDORED.md) -->
+        <nimbus.version>10.4.2</nimbus.version>
+        <jedis.version>5.2.0</jedis.version>
+        <resilience4j.version>2.3.0</resilience4j.version>
+        <commons.lang3.version>3.18.0</commons.lang3.version>
+        <jspecify.version>1.0.0</jspecify.version>
+        <vault.driver.version>5.1.0</vault.driver.version>
     </properties>
 
-    <dependencies>
-
-        <!-- ── Vendored DPN platform plumbing (see common/) ───────────── -->
-        <!--
-            Provides: GRPCUtils, PropertyUtil, SSLUtils,
-            HttpClientFactoryUtils, ManagementNodeDataHandler,
-            ProducerConfigService, InMemoryConfigurationStore,
-            IdpTokenService + all implementations, all DTOs.
-            Must be available in local Maven repo or artifact repository.
-        -->
-        <dependency>
-            <groupId>org.dsi.dpn</groupId>
-            <artifactId>rest-federator-common</artifactId>
-            <version>${rest.federator.common.version}</version>
-        </dependency>
-
-        <!-- ── Spring Boot ───────────────────────────────────────────── -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-security</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-validation</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-actuator</artifactId>
-        </dependency>
-
-        <!-- ── OpenAPI / Swagger UI ──────────────────────────────────── -->
-        <dependency>
-            <groupId>org.springdoc</groupId>
-            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-            <version>${springdoc.version}</version>
-        </dependency>
-
-        <!-- ── Lombok ────────────────────────────────────────────────── -->
-        <dependency>
-            <groupId>org.projectlombok</groupId>
-            <artifactId>lombok</artifactId>
-            <version>${lombok.version}</version>
-            <scope>provided</scope>
-        </dependency>
-
-        <!-- ── Test ──────────────────────────────────────────────────── -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.security</groupId>
-            <artifactId>spring-security-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-
-
-        <dependency>
-            <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-retry</artifactId>
-            <version>2.3.0</version>
-        </dependency>
-        <dependency>
-            <groupId>io.github.resilience4j</groupId>
-            <artifactId>resilience4j-circuitbreaker</artifactId>
-            <version>2.3.0</version>
-        </dependency>
-
-        <dependency>
-            <groupId>redis.clients</groupId>
-            <artifactId>jedis</artifactId>
-            <version>5.2.0</version>
-        </dependency>
-    </dependencies>
-
     <build>
-        <plugins>
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-                <configuration>
-                    <excludes>
-                        <exclude>
-                            <groupId>org.projectlombok</groupId>
-                            <artifactId>lombok</artifactId>
-                        </exclude>
-                    </excludes>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.jacoco</groupId>
-                <artifactId>jacoco-maven-plugin</artifactId>
-                <version>0.8.11</version>
-                <executions>
-                    <execution>
-                        <goals><goal>prepare-agent</goal></goals>
-                    </execution>
-                    <execution>
-                        <id>report</id>
-                        <phase>test</phase>
-                        <goals><goal>report</goal></goals>
-                    </execution>
-                </executions>
-            </plugin>
-        </plugins>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco.version}</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
     </build>
 
 </project>

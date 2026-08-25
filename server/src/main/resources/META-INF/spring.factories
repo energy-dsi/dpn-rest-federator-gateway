@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# © Crown Copyright 2026. National Digital Twin Programme.
+#
+# EnvironmentPostProcessor implementations are discovered from spring.factories,
+# not from AutoConfiguration.imports — they must run before any bean exists.
+#
+# FederatorCommonConfigEnvironmentPostProcessor publishes the federator
+# idp.keystore.* / idp.truststore.* / idp.jwks.url properties into the Spring
+# Environment so that spring.ssl.bundle.jks.federator-tls.* and
+# spring.security.oauth2.resourceserver.jwt.jwk-set-uri in application.properties
+# can reference them instead of repeating the paths, passwords and JWKS URL.
+org.springframework.boot.env.EnvironmentPostProcessor=\
+org.dsi.dpn.federator.rest.framework.server.config.FederatorCommonConfigEnvironmentPostProcessor
