@@ -40,17 +40,17 @@
 
     <properties>
         <java.version>21</java.version>
-        <federator.version>1.2.11</federator.version>
+        <rest.federator.common.version>1.0.0-SNAPSHOT</rest.federator.common.version>
         <lombok.version>1.18.38</lombok.version>
     </properties>
 
     <dependencies>
 
-        <!-- ── Existing federator jar ────────────────────────────────── -->
+        <!-- ── Vendored DPN platform plumbing (see common/) ───────────── -->
         <dependency>
-            <groupId>uk.gov.dbt.ndtp</groupId>
-            <artifactId>federator</artifactId>
-            <version>${federator.version}</version>
+            <groupId>org.dsi.dpn</groupId>
+            <artifactId>rest-federator-common</artifactId>
+            <version>${rest.federator.common.version}</version>
         </dependency>
 
         <!-- ── WebClient (mTLS) — no servlet container needed ───────────── -->

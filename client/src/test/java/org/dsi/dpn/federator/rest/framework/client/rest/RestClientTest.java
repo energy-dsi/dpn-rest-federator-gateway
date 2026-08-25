@@ -16,7 +16,7 @@ import org.mockito.quality.Strictness;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
-import uk.gov.dbt.ndtp.federator.common.service.idp.IdpTokenService;
+import org.dsi.dpn.common.service.idp.IdpTokenService;
 import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspClientVerificationService;
 import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspStatus;
 

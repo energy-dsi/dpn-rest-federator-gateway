@@ -14,7 +14,7 @@ import org.mockito.quality.Strictness;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import uk.gov.dbt.ndtp.federator.common.service.idp.IdpTokenService;
+import org.dsi.dpn.common.service.idp.IdpTokenService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;

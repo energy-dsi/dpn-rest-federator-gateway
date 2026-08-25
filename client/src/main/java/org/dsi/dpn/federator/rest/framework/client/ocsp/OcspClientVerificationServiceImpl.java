@@ -13,9 +13,9 @@ import java.time.Instant;
 import java.util.Properties;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
-import uk.gov.dbt.ndtp.federator.common.service.idp.IdpTokenService;
-import uk.gov.dbt.ndtp.federator.common.utils.PropertyUtil;
-import uk.gov.dbt.ndtp.federator.common.utils.SSLUtils;
+import org.dsi.dpn.common.service.idp.IdpTokenService;
+import org.dsi.dpn.common.utils.PropertyUtil;
+import org.dsi.dpn.common.utils.SSLUtils;
 
 /**
  * FRAMEWORK — client side. Do not modify.
@@ -155,7 +155,7 @@ public class OcspClientVerificationServiceImpl implements OcspClientVerification
      * In production, returns a real HttpClient with mTLS truststore.
      */
     protected java.net.http.HttpClient buildHttpClient(java.util.Properties props) {
-        javax.net.ssl.SSLContext sslCtx = uk.gov.dbt.ndtp.federator.common.utils.SSLUtils
+        javax.net.ssl.SSLContext sslCtx = org.dsi.dpn.common.utils.SSLUtils
                 .createSSLContext(
                         props.getProperty("idp.keystore.path"),
                         props.getProperty("idp.keystore.password"),

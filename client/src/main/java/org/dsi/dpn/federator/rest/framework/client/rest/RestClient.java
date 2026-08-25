@@ -24,23 +24,23 @@ import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.netty.http.client.HttpClient;
-import uk.gov.dbt.ndtp.federator.common.management.ManagementNodeDataHandler;
-import uk.gov.dbt.ndtp.federator.common.service.config.ConsumerConfigService;
-import uk.gov.dbt.ndtp.federator.common.storage.InMemoryConfigurationStore;
-import uk.gov.dbt.ndtp.federator.common.model.dto.ConsumerConfigDTO;
-import uk.gov.dbt.ndtp.federator.common.model.dto.ProducerDTO;
-import uk.gov.dbt.ndtp.federator.common.model.dto.ProductDTO;
-import uk.gov.dbt.ndtp.federator.common.service.idp.IdpTokenService;
-import uk.gov.dbt.ndtp.federator.common.utils.GRPCUtils;
-import uk.gov.dbt.ndtp.federator.common.utils.HttpClientFactoryUtils;
-import uk.gov.dbt.ndtp.federator.common.utils.ObjectMapperUtil;
-import uk.gov.dbt.ndtp.federator.common.utils.PropertyUtil;
-import uk.gov.dbt.ndtp.federator.common.utils.SSLUtils;
+import org.dsi.dpn.common.management.ManagementNodeDataHandler;
+import org.dsi.dpn.common.service.config.ConsumerConfigService;
+import org.dsi.dpn.common.storage.InMemoryConfigurationStore;
+import org.dsi.dpn.common.model.dto.ConsumerConfigDTO;
+import org.dsi.dpn.common.model.dto.ProducerDTO;
+import org.dsi.dpn.common.model.dto.ProductDTO;
+import org.dsi.dpn.common.service.idp.IdpTokenService;
+import org.dsi.dpn.common.utils.IdpTokenServiceFactory;
+import org.dsi.dpn.common.utils.HttpClientFactoryUtils;
+import org.dsi.dpn.common.utils.ObjectMapperUtil;
+import org.dsi.dpn.common.utils.PropertyUtil;
+import org.dsi.dpn.common.utils.SSLUtils;
 import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspClientVerificationService;
 import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspClientVerificationServiceImpl;
 import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspStatus;
 
-import uk.gov.dbt.ndtp.federator.common.storage.InMemoryConfigurationStore;
+import org.dsi.dpn.common.storage.InMemoryConfigurationStore;
 
 /**
  * FRAMEWORK — do not modify.
@@ -122,7 +122,7 @@ public class RestClient {
      */
     public RestClient() {
         this.commonProps      = PropertyUtil.getPropertiesFromFilePath(COMMON_CONFIG);
-        this.idpTokenService  = GRPCUtils.createIdpTokenService();
+        this.idpTokenService  = IdpTokenServiceFactory.createIdpTokenService();
         this.ocspService      = new OcspClientVerificationServiceImpl(this.commonProps, this.idpTokenService);
         this.timeout          = Duration.ofSeconds(
                 Long.parseLong(PropertyUtil.getPropertyValue(TIMEOUT_PROP, TIMEOUT_DEFAULT)));

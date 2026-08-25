@@ -3,7 +3,7 @@
 package org.dsi.dpn.demo.client;
 
 import java.util.UUID;
-import uk.gov.dbt.ndtp.federator.common.utils.PropertyUtil;
+import org.dsi.dpn.common.utils.PropertyUtil;
 
 /**
  * Inputs for a demo run.

@@ -20,10 +20,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.web.reactive.function.client.WebClient;
-import uk.gov.dbt.ndtp.federator.common.model.dto.ConsumerConfigDTO;
-import uk.gov.dbt.ndtp.federator.common.model.dto.ProductDTO;
-import uk.gov.dbt.ndtp.federator.common.model.dto.ProducerDTO;
-import uk.gov.dbt.ndtp.federator.common.service.idp.IdpTokenService;
+import org.dsi.dpn.common.model.dto.ConsumerConfigDTO;
+import org.dsi.dpn.common.model.dto.ProductDTO;
+import org.dsi.dpn.common.model.dto.ProducerDTO;
+import org.dsi.dpn.common.service.idp.IdpTokenService;
 import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspClientVerificationService;
 import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspStatus;
 
@@ -126,9 +126,11 @@ class RestClientBootstrapTest {
                 .hasValueSatisfying(r -> assertThat(r.allowedPaths()).hasSize(3));
     }
 
-    @Test @DisplayName("processConfig() skips a product with unusable allowed paths")
-    void processConfig_skipsUnusableAllowedPaths() {
-        client.processConfig(config("rest", "not a valid config", true));
+    @Test @DisplayName("processConfig() skips a product whose allowed-path list is empty")
+    void processConfig_skipsEmptyAllowedPaths() {
+        // An empty JSON array grants nothing, so the product is not registered at
+        // all rather than registered with a configuration that can never match.
+        client.processConfig(config("rest", "[]", true));
         assertThat(client.getRegistration("FMAR Product")).isEmpty();
     }
 
