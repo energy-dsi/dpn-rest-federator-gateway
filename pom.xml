@@ -30,12 +30,25 @@
 
     <description>
         Producer-side REST Federator. Standalone Spring Boot application.
-        framework/server: JWT validation, consumer verification, product
-                          path authorisation.
-        example/server:   FMAR reference implementation (illustrative only).
+        Generic authorizing reverse proxy: JWT validation, consumer
+        verification, method+path authorisation, then forwards the
+        authorized request to a configured backend. No business/example
+        code — see the demo/ folder for a runnable example backend+client.
         Reuses federator-common utilities for token acquisition, mTLS,
         and Management Node communication.
     </description>
+
+    <!--
+        NOTE: this pom is NOT an aggregator (Maven requires packaging=pom for
+        that, and this module must stay packaging=jar so CI keeps resolving
+        target/*.jar for the server image). The sibling projects are built
+        independently by their own poms:
+          client/                    -> org.dsi.dpn:rest-federator-client
+          demo/demo-runner-server/   -> org.dsi.dpn:demo-runner-server
+          demo/demo-runner-client/   -> org.dsi.dpn:demo-runner-client
+        CI builds `client` first (mvn install) so demo-runner-client can
+        resolve rest-federator-client from the local repository.
+    -->
 
     <parent>
         <groupId>org.springframework.boot</groupId>
@@ -71,11 +84,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-        <!-- WebFlux for SSE (batch endpoint streaming) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
