@@ -8,6 +8,7 @@ import java.util.Map;
 import org.dsi.dpn.federator.rest.framework.client.rest.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.dsi.dpn.common.telemetry.HeartbeatService;
 import org.dsi.dpn.common.utils.PropertyUtil;
 
 /**
@@ -35,6 +36,9 @@ import org.dsi.dpn.common.utils.PropertyUtil;
 public class FmarDemoRunner {
 
     private static final Logger log = LoggerFactory.getLogger(FmarDemoRunner.class);
+
+    /** Component name for heartbeat / OTEL identity on the consumer side. */
+    private static final String COMPONENT_NAME = "rest-federator-client";
 
     private static final String ASSETS_PATH = "/api/v1/fmar/assets";
     private static final String FSP_PATH_PREFIX = "/api/v1/fmar/fsp/";
@@ -240,23 +244,37 @@ public class FmarDemoRunner {
      */
     public static void main(String[] args) {
         org.dsi.dpn.common.telemetry.OpenTelemetryConfig.initialize();
-        initProperties();
 
-        DemoParameters params;
+        // Consumer-side heartbeat. Unlike the long-running gateway, which beats on a
+        // 15-minute schedule, the client is a one-shot Job: HeartbeatService emits
+        // immediately on start, so a run produces heartbeat.started, a single
+        // component.heartbeat, and heartbeat.stopped bracketing the work — a beat
+        // only while it is actually running, which is what the consumer side needs.
+        HeartbeatService heartbeat = HeartbeatService.create(COMPONENT_NAME);
+        heartbeat.start();
         try {
-            params = DemoParameters.resolve();
-        } catch (IllegalArgumentException e) {
-            log.error(e.getMessage());
-            log.error("Set PRODUCT_NAME to the DSM data product name for this consumer.");
-            System.exit(1);
-            return;
-        }
+            initProperties();
 
-        try {
-            new FmarDemoRunner(params).run();
-        } catch (Exception e) {
-            log.error("Demo run failed", e);
-            System.exit(1);
+            DemoParameters params;
+            try {
+                params = DemoParameters.resolve();
+            } catch (IllegalArgumentException e) {
+                log.error(e.getMessage());
+                log.error("Set PRODUCT_NAME to the DSM data product name for this consumer.");
+                System.exit(1);
+                return;
+            }
+
+            try {
+                new FmarDemoRunner(params).run();
+            } catch (Exception e) {
+                log.error("Demo run failed", e);
+                System.exit(1);
+            }
+        } finally {
+            // Explicit stop so heartbeat.stopped (with the total count) is emitted and
+            // flushed on the normal path, rather than relying on a shutdown hook.
+            heartbeat.stop();
         }
     }
 

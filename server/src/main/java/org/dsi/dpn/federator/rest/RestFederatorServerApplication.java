@@ -4,6 +4,7 @@ package org.dsi.dpn.federator.rest;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.dsi.dpn.common.telemetry.HeartbeatService;
 import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 
 /**
@@ -14,8 +15,17 @@ import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
  */
 @SpringBootApplication
 public class RestFederatorServerApplication {
+
+    /** Component name used for both OTEL service identity and heartbeat logs. */
+    private static final String COMPONENT_NAME = "rest-federator-server";
+
     public static void main(String[] args) {
         OpenTelemetryConfig.initialize();
+        // Periodic liveness beat, 15 minutes by default (HEARTBEAT_INTERVAL_SECONDS
+        // overrides), matching dpn-federator's federator-server cadence. Started
+        // before Spring so a beat is emitted even if context startup is slow, and
+        // registers its own shutdown hook.
+        HeartbeatService.startFromEnv(COMPONENT_NAME);
         SpringApplication.run(RestFederatorServerApplication.class, args);
     }
 }

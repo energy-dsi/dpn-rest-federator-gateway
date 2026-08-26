@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!--
-    Logback configuration for rest-federator-server.
+    Logback configuration for demo-runner-server.
 
     Mirrors dpn-federator's src/main/resources/logback.xml so REST and gRPC
     services produce format-compatible stdout and identical OTLP log records.
@@ -58,7 +58,7 @@
     </appender>
 
     <logger name="org.dsi.dpn.common" level="DEBUG"/>
-    <logger name="org.dsi.dpn.federator" level="DEBUG"/>
+    <logger name="org.dsi.dpn.demo" level="DEBUG"/>
 
     <!-- LOOP BREAKER. CollectorUnavailableLogHandler reports a failed OTLP
          export by logging a WARN. If that WARN reached the OpenTelemetry
