@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -227,7 +228,7 @@ public class RestClient {
             applyExtraHeaders(spec, extraHeaders);
             Object resp = spec
                     .retrieve()
-                    .onStatus(s -> s == HttpStatus.UNAUTHORIZED, r -> {
+                    .onStatus((HttpStatusCode s) -> s == HttpStatus.UNAUTHORIZED, r -> {
                         log.warn("401 on GET {} — token may have expired", url);
                         return r.createException();
                     })
@@ -293,7 +294,7 @@ public class RestClient {
                     .contentType(MediaType.APPLICATION_JSON)
                     .bodyValue(jsonPayload != null ? jsonPayload : "{}")
                     .retrieve()
-                    .onStatus(s -> s == HttpStatus.UNAUTHORIZED, r -> {
+                    .onStatus((HttpStatusCode s) -> s == HttpStatus.UNAUTHORIZED, r -> {
                         log.warn("401 on POST {} — token may have expired", url);
                         return r.createException();
                     })

@@ -104,8 +104,8 @@ public class RestFederatorServerConfig {
     @Bean
     public RestTemplate backendRestTemplate(RestTemplateBuilder builder) {
         RestTemplateBuilder configured = builder
-                .setConnectTimeout(Duration.ofSeconds(10))
-                .setReadTimeout(Duration.ofSeconds(60));
+                .connectTimeout(Duration.ofSeconds(10))
+                .readTimeout(Duration.ofSeconds(60));
 
         if (!VaultTlsSupport.isVaultTlsEnabled()) {
             return configured.build();

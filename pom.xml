@@ -25,7 +25,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.3.0</version>
+        <version>3.5.16</version>
         <relativePath/>
     </parent>
 
@@ -50,12 +50,12 @@
 
     <properties>
         <java.version>21</java.version>
-        <springdoc.version>2.5.0</springdoc.version>
+        <springdoc.version>2.9.0</springdoc.version>
         <lombok.version>1.18.38</lombok.version>
         <jacoco.version>0.8.11</jacoco.version>
         <!-- Vendored plumbing (see common/VENDORED.md) -->
         <nimbus.version>10.4.2</nimbus.version>
-        <jedis.version>5.2.0</jedis.version>
+        <jedis.version>7.5.3</jedis.version>
         <resilience4j.version>2.3.0</resilience4j.version>
         <commons.lang3.version>3.18.0</commons.lang3.version>
         <jspecify.version>1.0.0</jspecify.version>
