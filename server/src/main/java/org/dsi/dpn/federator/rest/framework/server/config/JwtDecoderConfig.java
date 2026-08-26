@@ -59,11 +59,24 @@ public class JwtDecoderConfig {
         // server-auth TLS only, but if the deployment enforces TLS client auth
         // (ssl.client.auth=required / mTLS ingress) this still works; the key
         // manager is simply unused when the server doesn't request a certificate.
-        SSLContext sslContext = SSLUtils.createSSLContext(
-                commonProps.getProperty("idp.keystore.path"),
-                commonProps.getProperty("idp.keystore.password"),
-                commonProps.getProperty("idp.truststore.path"),
-                commonProps.getProperty("idp.truststore.password"));
+        //
+        // Same switch HttpClientFactoryUtils.createHttpClientWithMtls() uses: when
+        // vault.tls.enabled=true there is no keystore/truststore file on disk — the
+        // cert manager's material lives only in Vault.
+        SSLContext sslContext;
+        try {
+            if (org.dsi.dpn.common.service.secret.VaultTlsSupport.isVaultTlsEnabled()) {
+                sslContext = org.dsi.dpn.common.service.secret.VaultTlsSupport.sslContext();
+            } else {
+                sslContext = SSLUtils.createSSLContext(
+                        commonProps.getProperty("idp.keystore.path"),
+                        commonProps.getProperty("idp.keystore.password"),
+                        commonProps.getProperty("idp.truststore.path"),
+                        commonProps.getProperty("idp.truststore.password"));
+            }
+        } catch (Exception e) {
+            throw new org.dsi.dpn.common.exception.FederatorSslException("Failed to build JwtDecoder SSLContext", e);
+        }
 
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory() {
             @Override

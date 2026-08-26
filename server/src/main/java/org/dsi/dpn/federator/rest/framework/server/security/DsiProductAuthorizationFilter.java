@@ -65,7 +65,7 @@ public class DsiProductAuthorizationFilter extends OncePerRequestFilter {
     private static final String COMMON_CONFIG_PROP  = "common.configuration";
 
     private static final String[] OPEN_PREFIXES = {
-            "/actuator", "/v3/api-docs", "/swagger-ui"
+            "/actuator", "/v3/api-docs", "/swagger-ui", "/.well-known"
     };
 
     private final ProducerConfigService  producerConfigService;

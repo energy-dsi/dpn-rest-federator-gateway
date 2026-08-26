@@ -20,12 +20,13 @@ import org.dsi.dpn.common.utils.PropertyUtil;
  * checks, allowed-path validation, certificate hot-reload) is handled inside
  * {@link RestClient}; this class only builds requests and prints results.
  *
- * <p>Demo sequence (paths follow the MHHS FMAR specification):
+ * <p>Demo sequence (paths follow the MHHS FMAR specification, prefixed with
+ * {@code /api/v1/fmar} for consistency with this gateway's other routes):
  * <ol>
- *   <li>{@code GET  /assets?importMpan=…&postcode=…}  — expected to be absent (404)</li>
- *   <li>{@code POST /fsp/{fspId}/assets}              — register the asset</li>
- *   <li>{@code GET  /assets?importMpan=…&postcode=…}  — now present</li>
- *   <li>{@code POST /fsp/{fspId}/assets}              — same MPAN again (409)</li>
+ *   <li>{@code GET  /api/v1/fmar/assets?importMpan=…&postcode=…}  — expected to be absent (404)</li>
+ *   <li>{@code POST /api/v1/fmar/fsp/{fspId}/assets}              — register the asset</li>
+ *   <li>{@code GET  /api/v1/fmar/assets?importMpan=…&postcode=…}  — now present</li>
+ *   <li>{@code POST /api/v1/fmar/fsp/{fspId}/assets}              — same MPAN again (409)</li>
  * </ol>
  *
  * <p>Runs as a one-shot process: parameters come from environment variables (set
@@ -35,7 +36,8 @@ public class FmarDemoRunner {
 
     private static final Logger log = LoggerFactory.getLogger(FmarDemoRunner.class);
 
-    private static final String ASSETS_PATH = "/assets";
+    private static final String ASSETS_PATH = "/api/v1/fmar/assets";
+    private static final String FSP_PATH_PREFIX = "/api/v1/fmar/fsp/";
 
     private final DemoParameters params;
     private final RestClient restClient;
@@ -73,6 +75,7 @@ public class FmarDemoRunner {
         step2Register(registerPath);
         step3LookupAfterRegistration(queryPath);
         step4RegisterDuplicate(registerPath);
+        step5ForbiddenPath();
 
         log.info(fmt.banner("DEMO COMPLETE"));
     }
@@ -122,6 +125,27 @@ public class FmarDemoRunner {
         }
     }
 
+    /**
+     * Deliberately calls a path that is NOT in the DSM product's allowed-path
+     * configuration, via {@link RestClient#getUnchecked} — which skips this
+     * client's own local pre-check so the request actually reaches the gateway.
+     * {@code DsiProductAuthorizationFilter}'s Stage 3 (method+path authorisation)
+     * rejects it there, so both this client's log AND the gateway's log show the
+     * failure — demonstrating the server-side enforcement actually works, not
+     * just the client's defensive local copy of the same rule.
+     */
+    private void step5ForbiddenPath() {
+        String path = ASSETS_PATH + "/getClientID";
+        log.info(fmt.step(5, "Call a path not in the allowed-path configuration (expect rejection)"));
+        try {
+            String body = restClient.getUnchecked(params.productName(), path, senderHeaders(true));
+            log.warn(fmt.failure("GET", path,
+                    "Expected the gateway to reject this path but the request succeeded: " + body));
+        } catch (Exception e) {
+            log.info(fmt.expected("GET", path, "FORBIDDEN — method+path not allowed", rootMessage(e)));
+        }
+    }
+
     // ── Request building ──────────────────────────────────────────────────────
 
     /** {@code GET /assets} with the spec's required query parameters. */
@@ -135,9 +159,9 @@ public class FmarDemoRunner {
         return path.toString();
     }
 
-    /** {@code POST /fsp/{fspId}/assets}. */
+    /** {@code POST /api/v1/fmar/fsp/{fspId}/assets}. */
     String registerPath() {
-        return "/fsp/" + params.fspId() + "/assets";
+        return FSP_PATH_PREFIX + params.fspId() + "/assets";
     }
 
     /**
@@ -215,6 +239,7 @@ public class FmarDemoRunner {
      * the same file the gRPC Federator client uses.
      */
     public static void main(String[] args) {
+        org.dsi.dpn.common.telemetry.OpenTelemetryConfig.initialize();
         initProperties();
 
         DemoParameters params;

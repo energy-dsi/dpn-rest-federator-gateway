@@ -4,6 +4,11 @@ package org.dsi.dpn.federator.rest.framework.client.ocsp;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -12,8 +17,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Properties;
 import lombok.extern.slf4j.Slf4j;
-import org.slf4j.MDC;
 import org.dsi.dpn.common.service.idp.IdpTokenService;
+import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
+import org.dsi.dpn.common.telemetry.OtelVerificationLogger;
 import org.dsi.dpn.common.utils.PropertyUtil;
 import org.dsi.dpn.common.utils.SSLUtils;
 
@@ -40,10 +46,8 @@ public class OcspClientVerificationServiceImpl implements OcspClientVerification
     private static final String OCSP_PATH         = "/api/v1/certificate/ocsp?clientId=";
     private static final String MN_BASE_URL_PROP  = "management.node.base.url";
 
-    // OTEL MDC keys
-    private static final String MDC_CLIENT_ID = "dpn.certificate.client_id";
-    private static final String MDC_TIMESTAMP = "dpn.certificate.verification_timestamp";
-    private static final String MDC_STATUS    = "dpn.certificate.verification_status";
+    private static final Tracer TRACER =
+            OpenTelemetryConfig.get().getTracer("org.dsi.dpn.federator.rest.framework.client.ocsp");
 
     private final String          managementNodeBaseUrl;
     private final HttpClient      httpClient;
@@ -88,15 +92,23 @@ public class OcspClientVerificationServiceImpl implements OcspClientVerification
 
     @Override
     public OcspStatus verify(String producerClientId) {
+        Span span = TRACER.spanBuilder("OcspClientVerificationServiceImpl.verify")
+                .setSpanKind(SpanKind.CLIENT)
+                .setAttribute("dpn.certificate.client_id", producerClientId)
+                .startSpan();
         Instant timestamp = Instant.now();
         OcspStatus status = OcspStatus.NOT_FOUND;
-        try {
+        try (Scope scope = span.makeCurrent()) {
             status = checkStatus(producerClientId);
+            span.setAttribute("dpn.certificate.verification_status", status.name());
         } catch (Exception e) {
             log.warn("Client OCSP check failed for producerClientId={}: {}",
                     producerClientId, e.getMessage());
+            span.recordException(e);
+            span.setStatus(StatusCode.ERROR, e.getMessage());
         } finally {
-            logOtel(producerClientId, timestamp, status);
+            OtelVerificationLogger.log(log, producerClientId, timestamp, status == OcspStatus.ACTIVE, status.name());
+            span.end();
         }
         return status;
     }
@@ -131,40 +143,33 @@ public class OcspClientVerificationServiceImpl implements OcspClientVerification
         };
     }
 
-    private void logOtel(String clientId, Instant timestamp, OcspStatus status) {
-        try {
-            MDC.put(MDC_CLIENT_ID, clientId);
-            MDC.put(MDC_TIMESTAMP, timestamp.toString());
-            MDC.put(MDC_STATUS,    status.name());
-            if (status == OcspStatus.ACTIVE) {
-                log.info("Client OCSP verification: status={} producerClientId={} timestamp={}",
-                        status, clientId, timestamp);
-            } else {
-                log.error("Outbound call blocked — OCSP: status={} producerClientId={} timestamp={}",
-                        status, clientId, timestamp);
-            }
-        } finally {
-            MDC.remove(MDC_CLIENT_ID);
-            MDC.remove(MDC_TIMESTAMP);
-            MDC.remove(MDC_STATUS);
-        }
-    }
-
     /**
      * Protected for testing — allows injection of a mock HttpClient.
      * In production, returns a real HttpClient with mTLS truststore.
      */
     protected java.net.http.HttpClient buildHttpClient(java.util.Properties props) {
-        javax.net.ssl.SSLContext sslCtx = org.dsi.dpn.common.utils.SSLUtils
-                .createSSLContext(
-                        props.getProperty("idp.keystore.path"),
-                        props.getProperty("idp.keystore.password"),
-                        props.getProperty("idp.truststore.path"),
-                        props.getProperty("idp.truststore.password"));
-        return HttpClient.newBuilder()
-                .version(HttpClient.Version.HTTP_1_1)
-                .connectTimeout(Duration.ofSeconds(5))
-                .sslContext(sslCtx)
-                .build();
+        try {
+            javax.net.ssl.SSLContext sslCtx;
+            // Same switch HttpClientFactoryUtils.createHttpClientWithMtls() uses:
+            // when vault.tls.enabled=true there is no keystore/truststore file on
+            // disk — the cert manager's material lives only in Vault.
+            if (org.dsi.dpn.common.service.secret.VaultTlsSupport.isVaultTlsEnabled()) {
+                sslCtx = org.dsi.dpn.common.service.secret.VaultTlsSupport.sslContext();
+            } else {
+                sslCtx = org.dsi.dpn.common.utils.SSLUtils
+                        .createSSLContext(
+                                props.getProperty("idp.keystore.path"),
+                                props.getProperty("idp.keystore.password"),
+                                props.getProperty("idp.truststore.path"),
+                                props.getProperty("idp.truststore.password"));
+            }
+            return HttpClient.newBuilder()
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .connectTimeout(Duration.ofSeconds(5))
+                    .sslContext(sslCtx)
+                    .build();
+        } catch (Exception e) {
+            throw new org.dsi.dpn.common.exception.FederatorSslException("Failed to build OCSP HttpClient", e);
+        }
     }
 }

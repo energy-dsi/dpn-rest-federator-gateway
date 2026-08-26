@@ -2,18 +2,27 @@
 // © Crown Copyright 2026. National Digital Twin Programme.
 package org.dsi.dpn.federator.rest.framework.server.config;
 
+import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.time.Duration;
 import java.util.Properties;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.ssl.SslBundleRegistrar;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestTemplate;
 import org.dsi.dpn.federator.rest.framework.server.proxy.BackendProperties;
+import org.dsi.dpn.common.exception.FederatorSslException;
 import org.dsi.dpn.common.management.ManagementNodeDataHandler;
 import org.dsi.dpn.common.service.config.ProducerConfigService;
 import org.dsi.dpn.common.service.idp.IdpTokenService;
+import org.dsi.dpn.common.service.secret.VaultSslBundleRegistrar;
+import org.dsi.dpn.common.service.secret.VaultTlsSupport;
 import org.dsi.dpn.common.storage.InMemoryConfigurationStore;
 import org.dsi.dpn.common.utils.IdpTokenServiceFactory;
 import org.dsi.dpn.common.utils.HttpClientFactoryUtils;
@@ -43,6 +52,12 @@ public class RestFederatorServerConfig {
                 + "Set FEDERATOR_SERVER_PROPERTIES env var to path of server.properties.");
         }
         log.info("PropertyUtil initialised for REST Federator Server");
+    }
+
+    /** Sources this gateway's own inbound {@code federator-tls} bundle from Vault. */
+    @Bean
+    public SslBundleRegistrar vaultSslBundleRegistrar() {
+        return new VaultSslBundleRegistrar("federator-tls");
     }
 
     @Bean
@@ -81,14 +96,45 @@ public class RestFederatorServerConfig {
 
     /**
      * Outbound client used by BackendProxyController to forward authorized requests
-     * to the internal backend. Plain HTTP — the backend sits inside the cluster and
-     * is authenticated with the shared API key, not mTLS.
+     * to the internal backend. The backend is authenticated with the shared API key,
+     * not mTLS — but when it terminates HTTPS with the same Vault-issued certificate
+     * this gateway uses, this client needs to trust that certificate's CA. No client
+     * cert is presented here (server-only TLS on the backend's side).
      */
     @Bean
     public RestTemplate backendRestTemplate(RestTemplateBuilder builder) {
-        return builder
+        RestTemplateBuilder configured = builder
                 .setConnectTimeout(Duration.ofSeconds(10))
-                .setReadTimeout(Duration.ofSeconds(60))
-                .build();
+                .setReadTimeout(Duration.ofSeconds(60));
+
+        if (!VaultTlsSupport.isVaultTlsEnabled()) {
+            return configured.build();
+        }
+
+        try {
+            SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, VaultTlsSupport.trustManagers(), null);
+
+            SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory() {
+                @Override
+                protected void prepareConnection(HttpURLConnection connection, String httpMethod)
+                        throws IOException {
+                    if (connection instanceof HttpsURLConnection https) {
+                        https.setSSLSocketFactory(sslContext.getSocketFactory());
+                        // The backend presents the shared node identity cert (same Vault
+                        // alias/SAN list as this gateway's own inbound cert) rather than one
+                        // naming its own Kubernetes Service DNS name, so default hostname
+                        // verification against e.g. "dpn-demo-runner-server-1" always fails
+                        // even though the chain is trusted. The CA-based trustManagers above
+                        // already establish trust; skip the SAN/hostname match on top of it.
+                        https.setHostnameVerifier((hostname, session) -> true);
+                    }
+                    super.prepareConnection(connection, httpMethod);
+                }
+            };
+            return configured.requestFactory(() -> requestFactory).build();
+        } catch (Exception e) {
+            throw new FederatorSslException("Failed to build backend RestTemplate SSLContext", e);
+        }
     }
 }

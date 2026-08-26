@@ -13,6 +13,11 @@ import com.nimbusds.jose.crypto.ECDSASigner;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import java.io.FileInputStream;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -38,6 +43,7 @@ import org.dsi.dpn.common.service.secret.VaultTlsSupport;
 import org.dsi.dpn.common.utils.PropertyUtil;
 import org.dsi.dpn.common.utils.RedisUtil;
 import org.dsi.dpn.common.exception.FederatorTokenException;
+import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 
 /**
  * Implementation of IdpTokenService that authenticates to Keycloak using
@@ -83,6 +89,9 @@ public class IdpTokenServicePrivateJwtImpl extends AbstractIdpTokenService {
 
     private static final String COMMON_CONFIG_PROPERTIES = "common.configuration";
     private static final String MANAGEMENT_NODE_DEFAULT_ID = "default";
+
+    private static final Tracer TRACER =
+            OpenTelemetryConfig.get().getTracer("org.dsi.dpn.common.service.idp");
 
     /** RFC 7523 §2.2 client_assertion_type value */
     private static final String CLIENT_ASSERTION_TYPE_VALUE =
@@ -148,11 +157,18 @@ public class IdpTokenServicePrivateJwtImpl extends AbstractIdpTokenService {
     // -----------------------------------------------------------------------
 
     private String fetchTokenInternal(String managementNodeId) {
-        try {
+        Span span = TRACER.spanBuilder("IdpTokenServicePrivateJwtImpl.fetchToken")
+                .setSpanKind(SpanKind.CLIENT)
+                .setAttribute("dpn.management_node_id",
+                        StringUtils.defaultIfBlank(managementNodeId, MANAGEMENT_NODE_DEFAULT_ID))
+                .startSpan();
+        try (Scope scope = span.makeCurrent()) {
             String cachedToken = getTokenFromCacheOrNull(managementNodeId);
             if (cachedToken != null) {
+                span.setAttribute("dpn.token_cache_hit", true);
                 return cachedToken;
             }
+            span.setAttribute("dpn.token_cache_hit", false);
 
             log.debug("No cached token in Redis for node '{}', building private_key_jwt assertion",
                     StringUtils.defaultIfBlank(managementNodeId, MANAGEMENT_NODE_DEFAULT_ID));
@@ -191,12 +207,23 @@ public class IdpTokenServicePrivateJwtImpl extends AbstractIdpTokenService {
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new FederatorTokenException("Thread interrupted while fetching token from IDP", e);
+            FederatorTokenException wrapped =
+                    new FederatorTokenException("Thread interrupted while fetching token from IDP", e);
+            span.recordException(wrapped);
+            span.setStatus(StatusCode.ERROR, wrapped.getMessage());
+            throw wrapped;
         } catch (FederatorTokenException e) {
+            span.recordException(e);
+            span.setStatus(StatusCode.ERROR, e.getMessage());
             throw e;
         } catch (Exception e) {
-            throw new FederatorTokenException(
+            FederatorTokenException wrapped = new FederatorTokenException(
                     "Error fetching token via private_key_jwt for node: " + managementNodeId, e);
+            span.recordException(wrapped);
+            span.setStatus(StatusCode.ERROR, wrapped.getMessage());
+            throw wrapped;
+        } finally {
+            span.end();
         }
     }
 

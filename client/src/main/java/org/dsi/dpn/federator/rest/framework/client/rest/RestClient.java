@@ -3,6 +3,11 @@
 package org.dsi.dpn.federator.rest.framework.client.rest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 
 import java.nio.file.FileSystems;
 import java.nio.file.Path;
@@ -41,6 +46,7 @@ import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspClientVerificationSe
 import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspStatus;
 
 import org.dsi.dpn.common.storage.InMemoryConfigurationStore;
+import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 
 /**
  * FRAMEWORK — do not modify.
@@ -102,6 +108,9 @@ public class RestClient {
     private static final String TRUSTSTORE_PASS  = "idp.truststore.password";
     private static final String PRODUCT_TYPE_REST = "rest";
     private static final String BEARER           = "Bearer ";
+
+    private static final Tracer TRACER =
+            OpenTelemetryConfig.get().getTracer("org.dsi.dpn.federator.rest.framework.client.rest");
 
     private final IdpTokenService idpTokenService;
     private final Duration        timeout;
@@ -180,10 +189,38 @@ public class RestClient {
      * @throws IllegalArgumentException if product not found or path not in allowed paths
      */
     public String get(String productName, String path, Map<String, String> extraHeaders) {
-        ProductRegistration reg = resolveAndValidate(productName, path, "GET");
+        return doGet(resolveAndValidate(productName, path, "GET"), productName, path, extraHeaders);
+    }
+
+    /**
+     * Makes a GET call WITHOUT validating the path against the registered product's
+     * allowed paths — bypasses the same local pre-check {@link #resolveAndValidate}
+     * performs. Deliberately for demonstrating/testing server-side enforcement (a
+     * call this method lets through still has to pass {@code DsiProductAuthorizationFilter}
+     * on the gateway) — never use this for real traffic; use {@link #get(String, String)}.
+     */
+    public String getUnchecked(String productName, String path, Map<String, String> extraHeaders) {
+        ProductRegistration reg = registry.get(productName);
+        if (reg == null) {
+            throw new IllegalArgumentException(
+                    "No REST product registered for productName=" + productName
+                            + ". Available products: " + registry.keySet());
+        }
+        return doGet(reg, productName, path, extraHeaders);
+    }
+
+    private String doGet(ProductRegistration reg, String productName, String path,
+                         Map<String, String> extraHeaders) {
         String url = reg.baseUrl() + path;
+        Span span = TRACER.spanBuilder("RestClient.get")
+                .setSpanKind(SpanKind.CLIENT)
+                .setAttribute("http.method", "GET")
+                .setAttribute("url.path", path)
+                .setAttribute("dpn.product_name", productName)
+                .setAttribute("dpn.producer_id", reg.producerId())
+                .startSpan();
         log.info("GET {}", url);
-        try {
+        try (Scope scope = span.makeCurrent()) {
             var spec = reg.webClient().get()
                     .uri(url)
                     .header(HttpHeaders.AUTHORIZATION, BEARER + idpTokenService.fetchToken());
@@ -201,8 +238,12 @@ public class RestClient {
             log.info("GET {} → {}", url, result);
             return result;
         } catch (WebClientResponseException e) {
+            span.recordException(e);
+            span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new RuntimeException("GET failed: HTTP " + e.getStatusCode()
                     + " url=" + url, e);
+        } finally {
+            span.end();
         }
     }
 
@@ -235,8 +276,15 @@ public class RestClient {
                        Map<String, String> extraHeaders) {
         ProductRegistration reg = resolveAndValidate(productName, path, "POST");
         String url = reg.baseUrl() + path;
+        Span span = TRACER.spanBuilder("RestClient.post")
+                .setSpanKind(SpanKind.CLIENT)
+                .setAttribute("http.method", "POST")
+                .setAttribute("url.path", path)
+                .setAttribute("dpn.product_name", productName)
+                .setAttribute("dpn.producer_id", reg.producerId())
+                .startSpan();
         log.info("POST {}", url);
-        try {
+        try (Scope scope = span.makeCurrent()) {
             var bodySpec = reg.webClient().post()
                     .uri(url)
                     .header(HttpHeaders.AUTHORIZATION, BEARER + idpTokenService.fetchToken());
@@ -256,8 +304,12 @@ public class RestClient {
             log.info("POST {} → {}", url, result);
             return result;
         } catch (WebClientResponseException e) {
+            span.recordException(e);
+            span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new RuntimeException("POST failed: HTTP " + e.getStatusCode()
                     + " url=" + url, e);
+        } finally {
+            span.end();
         }
     }
 
@@ -462,22 +514,32 @@ public class RestClient {
         return reg;
     }
 
-    // ── WebClient builder — reads P12 fresh from disk each call ──────────────
+    // ── WebClient builder — reads fresh mTLS material on every call ──────────
 
     protected WebClient buildWebClient() {
         try {
-            String keystorePath   = commonProps.getProperty(KEYSTORE_PATH);
-            String keystorePass   = commonProps.getProperty(KEYSTORE_PASS);
-            String truststorePath = commonProps.getProperty(TRUSTSTORE_PATH);
-            String truststorePass = commonProps.getProperty(TRUSTSTORE_PASS);
+            // Same switch HttpClientFactoryUtils.createHttpClientWithMtls() uses:
+            // when vault.tls.enabled=true the cert manager's Vault-stored material
+            // is used directly, in memory — there is no keystore file on disk for
+            // this codepath, so falling through to the file-based branch below
+            // would fail with "file not found" rather than a clear error.
+            javax.net.ssl.SSLContext jdkContext;
+            if (org.dsi.dpn.common.service.secret.VaultTlsSupport.isVaultTlsEnabled()) {
+                jdkContext = org.dsi.dpn.common.service.secret.VaultTlsSupport.sslContext();
+            } else {
+                String keystorePath   = commonProps.getProperty(KEYSTORE_PATH);
+                String keystorePass   = commonProps.getProperty(KEYSTORE_PASS);
+                String truststorePath = commonProps.getProperty(TRUSTSTORE_PATH);
+                String truststorePass = commonProps.getProperty(TRUSTSTORE_PASS);
 
-            // SSLUtils.createSSLContext() returns javax.net.ssl.SSLContext —
-            // same call used by HttpClientFactoryUtils.createHttpClientWithMtls().
+                // SSLUtils.createSSLContext() returns javax.net.ssl.SSLContext —
+                // same call used by HttpClientFactoryUtils.createHttpClientWithMtls().
+                jdkContext = SSLUtils.createSSLContext(
+                        keystorePath, keystorePass, truststorePath, truststorePass);
+            }
+
             // Wrap it in JdkSslContext which implements io.netty.handler.ssl.SslContext
             // — the type that SslContextSpec.sslContext(SslContext) accepts.
-            javax.net.ssl.SSLContext jdkContext = SSLUtils.createSSLContext(
-                    keystorePath, keystorePass, truststorePath, truststorePass);
-
             io.netty.handler.ssl.SslContext nettySslContext =
                     new io.netty.handler.ssl.JdkSslContext(
                             jdkContext,

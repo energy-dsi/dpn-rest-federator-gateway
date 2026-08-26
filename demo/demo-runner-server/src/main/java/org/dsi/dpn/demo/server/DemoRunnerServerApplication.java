@@ -6,6 +6,7 @@ import io.swagger.v3.oas.annotations.OpenAPIDefinition;
 import io.swagger.v3.oas.annotations.info.Info;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 
 /**
  * Demo Runner Server — EXAMPLE backend service, deployed separately from the
@@ -25,6 +26,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
                 + "Illustrative only — data is held in memory."))
 public class DemoRunnerServerApplication {
     public static void main(String[] args) {
+        OpenTelemetryConfig.initialize();
         SpringApplication.run(DemoRunnerServerApplication.class, args);
     }
 }

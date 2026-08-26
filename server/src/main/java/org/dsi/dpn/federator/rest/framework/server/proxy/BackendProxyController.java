@@ -2,12 +2,18 @@
 // © Crown Copyright 2026. National Digital Twin Programme.
 package org.dsi.dpn.federator.rest.framework.server.proxy;
 
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.Set;
 import lombok.extern.slf4j.Slf4j;
+import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -69,8 +75,11 @@ public class BackendProxyController {
      * path can never be forwarded to the backend.
      */
     private static final String[] INTERNAL_PREFIXES = {
-            "/actuator", "/v3/api-docs", "/swagger-ui"
+            "/actuator", "/v3/api-docs", "/swagger-ui", "/.well-known"
     };
+
+    private static final Tracer TRACER =
+            OpenTelemetryConfig.get().getTracer("org.dsi.dpn.federator.rest.framework.server.proxy");
 
     private final RestTemplate restTemplate;
     private final BackendProperties backendProperties;
@@ -103,28 +112,35 @@ public class BackendProxyController {
 
         String targetUrl = buildTargetUrl(request);
 
-        if (backendProperties.baseUrl() == null || backendProperties.baseUrl().isBlank()) {
-            log.error("backend.base-url is not configured — cannot forward {} {}",
-                    method, request.getRequestURI());
-            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
-        }
+        Span span = TRACER.spanBuilder("BackendProxyController.forward")
+                .setSpanKind(SpanKind.SERVER)
+                .setAttribute("http.method", method.name())
+                .setAttribute("url.path", request.getRequestURI())
+                .startSpan();
+        try (Scope scope = span.makeCurrent()) {
+            if (backendProperties.baseUrl() == null || backendProperties.baseUrl().isBlank()) {
+                log.error("backend.base-url is not configured — cannot forward {} {}",
+                        method, request.getRequestURI());
+                span.setStatus(StatusCode.ERROR, "backend.base-url not configured");
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
+            }
 
-        HttpHeaders outboundHeaders = copyRequestHeaders(request);
-        if (backendProperties.hasApiKey()) {
-            outboundHeaders.set(BackendProperties.API_KEY_HEADER, backendProperties.apiKey());
-        } else {
-            log.warn("backend.api-key is not configured — forwarding {} {} without an API key",
-                    method, request.getRequestURI());
-        }
+            HttpHeaders outboundHeaders = copyRequestHeaders(request);
+            if (backendProperties.hasApiKey()) {
+                outboundHeaders.set(BackendProperties.API_KEY_HEADER, backendProperties.apiKey());
+            } else {
+                log.warn("backend.api-key is not configured — forwarding {} {} without an API key",
+                        method, request.getRequestURI());
+            }
 
-        log.info("Proxying {} {} -> {}", method, request.getRequestURI(), targetUrl);
+            log.info("Proxying {} {} -> {}", method, request.getRequestURI(), targetUrl);
 
-        try {
             ResponseEntity<byte[]> backendResponse = restTemplate.exchange(
                     targetUrl, method, new HttpEntity<>(body, outboundHeaders), byte[].class);
 
             log.info("Backend responded {} for {} {}",
                     backendResponse.getStatusCode(), method, request.getRequestURI());
+            span.setAttribute("http.response.status_code", backendResponse.getStatusCode().value());
 
             return ResponseEntity.status(backendResponse.getStatusCode())
                     .headers(filterResponseHeaders(backendResponse.getHeaders()))
@@ -135,13 +151,18 @@ public class BackendProxyController {
             // sees the backend's real status and error body.
             log.warn("Backend returned {} for {} {}",
                     e.getStatusCode(), method, request.getRequestURI());
+            span.setAttribute("http.response.status_code", e.getStatusCode().value());
             return ResponseEntity.status(e.getStatusCode())
                     .headers(filterResponseHeaders(e.getResponseHeaders()))
                     .body(e.getResponseBodyAsByteArray());
 
         } catch (ResourceAccessException e) {
             log.error("Backend unreachable at {}: {}", targetUrl, e.getMessage());
+            span.recordException(e);
+            span.setStatus(StatusCode.ERROR, e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
+        } finally {
+            span.end();
         }
     }
 

@@ -9,8 +9,8 @@ import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.oauth2.server.resource.web.authentication.BearerTokenAuthenticationFilter;
 import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.dsi.dpn.federator.rest.framework.server.security.DsiProductAuthorizationFilter;
 import org.dsi.dpn.federator.rest.framework.server.security.KeycloakJwtConverter;
 
@@ -26,6 +26,13 @@ import org.dsi.dpn.federator.rest.framework.server.security.KeycloakJwtConverter
  *                                      Equivalent to ConsumerVerificationServerInterceptor
  *                                      plus REST-specific path matching.
  *   3. SecurityHeadersFilter         — OWASP security response headers.
+ *
+ * DsiProductAuthorizationFilter is anchored to BearerTokenAuthenticationFilter
+ * (not UsernamePasswordAuthenticationFilter): the resource-server JWT filter
+ * runs later in Spring Security's standard chain than the form-login filter,
+ * so anchoring to the latter ran DsiProductAuthorizationFilter before
+ * SecurityContextHolder had an Authentication — its "not yet authenticated"
+ * early-return then let every request through unchecked, regardless of path.
  */
 @Configuration
 @EnableWebSecurity
@@ -55,12 +62,13 @@ public class SecurityConfig {
                     "/actuator/**",
                     "/v3/api-docs/**",
                     "/swagger-ui/**",
-                    "/swagger-ui.html")
+                    "/swagger-ui.html",
+                    "/.well-known/**")
                 .permitAll()
                 .anyRequest().authenticated())
             .oauth2ResourceServer(oauth2 ->
                 oauth2.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtConverter)))
-            .addFilterAfter(authFilter, UsernamePasswordAuthenticationFilter.class)
+            .addFilterAfter(authFilter, BearerTokenAuthenticationFilter.class)
             .addFilterAfter(headersFilter, DsiProductAuthorizationFilter.class);
 
         return http.build();

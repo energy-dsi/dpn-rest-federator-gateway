@@ -111,7 +111,20 @@ public final class VaultKeystoreProvider {
         return keyStore;
     }
 
-    static KeyStore buildTrustStore(SecretProvider provider, String basePath, char[] password) throws Exception {
+    /** Reads just the leaf certificate from Vault, e.g. for publishing a JWKS entry. */
+    public static X509Certificate fetchLeafCertificate(SecretProvider provider, String basePath) throws Exception {
+        String certPem = require(provider, basePath + CERTIFICATE_SUFFIX, FIELD_CERTIFICATE, "leaf certificate");
+        return parseCertificate(certPem);
+    }
+
+    /**
+     * Reads the CA chain from Vault and returns an in-memory PKCS12 truststore.
+     * Package-visible {@code buildTrustStore} originally; made public so callers
+     * building a raw {@code javax.net.ssl.SSLContext} or a Spring Boot
+     * {@code SslBundle} — which need the {@link KeyStore} itself, not a
+     * {@code TrustManager[]} — do not have to duplicate this logic.
+     */
+    public static KeyStore buildTrustStore(SecretProvider provider, String basePath, char[] password) throws Exception {
         String chainPem = provider.getSecret(basePath + CA_CHAIN_SUFFIX, FIELD_CHAIN);
         List<X509Certificate> cas = parseCertificates(chainPem);
         KeyStore trustStore = KeyStore.getInstance(KEYSTORE_TYPE_PKCS12);

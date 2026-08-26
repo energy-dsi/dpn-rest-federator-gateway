@@ -4,6 +4,7 @@ package org.dsi.dpn.federator.rest;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 
 /**
  * REST Federator — Producer-side server.
@@ -14,6 +15,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 @SpringBootApplication
 public class RestFederatorServerApplication {
     public static void main(String[] args) {
+        OpenTelemetryConfig.initialize();
         SpringApplication.run(RestFederatorServerApplication.class, args);
     }
 }

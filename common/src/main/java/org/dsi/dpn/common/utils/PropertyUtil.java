@@ -66,6 +66,8 @@ public class PropertyUtil {
     public static final String VAULT_URI = "vault.uri";
     public static final String VAULT_TRUSTSTORE_PATH = "vault.truststore.path";
     public static final String VAULT_TRUSTSTORE_PASSWORD = "vault.truststore.password";
+    /** Environment variable holding the Vault-connection truststore password, takes precedence if set. */
+    public static final String ENV_VAULT_TRUSTSTORE_PASSWORD = "VAULT_TRUSTSTORE_PASSWORD";
     public static final String ENV_VAULT_TOKEN = "VAULT_TOKEN";
     public static final String ENV_VAULT_KEYSTORE_PASSWORD_PATH = "VAULT_KEYSTORE_PASSWORD_PATH";
     public static final String ENV_VAULT_TRUSTSTORE_PASSWORD_PATH = "VAULT_TRUSTSTORE_PASSWORD_PATH";
@@ -163,7 +165,11 @@ public class PropertyUtil {
         }
 
         String vaultTruststorePath = properties.getProperty(VAULT_TRUSTSTORE_PATH);
-        String vaultTruststorePassword = properties.getProperty(VAULT_TRUSTSTORE_PASSWORD);
+        // The real password is a Vault-issued secret, never committed to the
+        // ConfigMap-rendered properties file; it arrives via VAULT_TRUSTSTORE_PASSWORD
+        // (a Kubernetes Secret env var), which takes precedence over the property.
+        String vaultTruststorePassword = firstNonBlank(
+                System.getenv(ENV_VAULT_TRUSTSTORE_PASSWORD), properties.getProperty(VAULT_TRUSTSTORE_PASSWORD));
 
         String cacheKey = buildCacheKey(vaultUri, authConfig, vaultTruststorePath);
 

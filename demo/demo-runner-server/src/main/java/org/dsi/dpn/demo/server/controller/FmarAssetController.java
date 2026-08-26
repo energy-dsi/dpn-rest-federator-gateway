@@ -32,10 +32,12 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * EXAMPLE BACKEND — implements a subset of the MHHS FMAR specification.
  *
- * <p>Endpoints (paths, parameters and headers follow the published spec):
+ * <p>Endpoints (parameters and headers follow the published spec; paths carry an
+ * {@code /api/v1/fmar} prefix for consistency with this gateway's other routes —
+ * the spec itself defines the bare {@code /assets} and {@code /fsp/{fspId}/assets}):
  * <ul>
- *   <li>{@code GET  /assets}             — look up an asset by import MPAN</li>
- *   <li>{@code POST /fsp/{fspId}/assets} — register a new asset</li>
+ *   <li>{@code GET  /api/v1/fmar/assets}             — look up an asset by import MPAN</li>
+ *   <li>{@code POST /api/v1/fmar/fsp/{fspId}/assets} — register a new asset</li>
  * </ul>
  *
  * <p>This service is reached through the REST Federator gateway, which has already
@@ -54,7 +56,7 @@ public class FmarAssetController {
 
     private final InMemoryAssetStore assetStore;
 
-    @GetMapping(value = "/assets", produces = MediaType.APPLICATION_JSON_VALUE)
+    @GetMapping(value = "/api/v1/fmar/assets", produces = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Query an asset by import MPAN",
             description = "Returns the registered asset matching the supplied import MPAN "
                     + "(and postcode/assetId when provided).")
@@ -97,19 +99,19 @@ public class FmarAssetController {
                     description = "Whether contractual authorisation is held")
             @RequestHeader("X-Contractual-Authorisation") boolean contractualAuthorisation) {
 
-        log.info("GET /assets importMpan={} postcode={} assetId={} sender={}/{} auth={}",
+        log.info("GET /api/v1/fmar/assets importMpan={} postcode={} assetId={} sender={}/{} auth={}",
                 importMpan, postcode, assetId, senderFmarId, senderRole,
                 contractualAuthorisation);
 
         return assetStore.find(importMpan, postcode, assetId)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> {
-                    log.info("GET /assets — no asset found for importMpan={}", importMpan);
+                    log.info("GET /api/v1/fmar/assets — no asset found for importMpan={}", importMpan);
                     return ResponseEntity.notFound().build();
                 });
     }
 
-    @PostMapping(value = "/fsp/{fspId}/assets",
+    @PostMapping(value = "/api/v1/fmar/fsp/{fspId}/assets",
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Register a new asset",
@@ -137,7 +139,7 @@ public class FmarAssetController {
 
             @Valid @RequestBody NewAssetRegistrationRequest request) {
 
-        log.info("POST /fsp/{}/assets assetName='{}' sender={}/{}",
+        log.info("POST /api/v1/fmar/fsp/{}/assets assetName='{}' sender={}/{}",
                 fspId, request.getAssetName(), senderFmarId, senderRole);
 
         // The spec restricts registration to these two statuses; the wider set is

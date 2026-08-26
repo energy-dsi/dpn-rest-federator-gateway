@@ -40,6 +40,15 @@
 
 
     <dependencies>
+        <!-- VaultSslBundleRegistrar + OpenTelemetry telemetry, shared with the gateway
+             so this demo backend can terminate HTTPS with the same Vault-issued
+             certificate and emit the same traces/spans. -->
+        <dependency>
+            <groupId>org.dsi.dpn</groupId>
+            <artifactId>rest-federator-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
