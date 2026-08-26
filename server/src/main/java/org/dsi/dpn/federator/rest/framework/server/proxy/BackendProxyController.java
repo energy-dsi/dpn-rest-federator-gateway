@@ -25,7 +25,9 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 import org.springframework.http.HttpEntity;
+import java.net.URI;
 
 /**
  * FRAMEWORK — generic authorising reverse proxy.
@@ -110,8 +112,6 @@ public class BackendProxyController {
             return ResponseEntity.notFound().build();
         }
 
-        String targetUrl = buildTargetUrl(request);
-
         Span span = TRACER.spanBuilder("BackendProxyController.forward")
                 .setSpanKind(SpanKind.SERVER)
                 .setAttribute("http.method", method.name())
@@ -125,6 +125,7 @@ public class BackendProxyController {
                 return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
             }
 
+            URI targetUrl = buildTargetUrl(request);
             HttpHeaders outboundHeaders = copyRequestHeaders(request);
             if (backendProperties.hasApiKey()) {
                 outboundHeaders.set(BackendProperties.API_KEY_HEADER, backendProperties.apiKey());
@@ -157,7 +158,8 @@ public class BackendProxyController {
                     .body(e.getResponseBodyAsByteArray());
 
         } catch (ResourceAccessException e) {
-            log.error("Backend unreachable at {}: {}", targetUrl, e.getMessage());
+            log.error("Backend unreachable for {} {} (backend base {}): {}",
+                    method, request.getRequestURI(), backendProperties.baseUrl(), e.getMessage());
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
@@ -173,15 +175,27 @@ public class BackendProxyController {
         return false;
     }
 
-    /** Backend base URL + original path + original query string. */
-    String buildTargetUrl(HttpServletRequest request) {
-        StringBuilder url = new StringBuilder(backendProperties.baseUrl())
-                .append(request.getRequestURI());
+    /**
+     * Backend base URL + original path + original query string.
+     *
+     * <p>Built via {@link UriComponentsBuilder} rather than string concatenation
+     * so the destination scheme/host/port always come from the fixed, configured
+     * {@code backendProperties.baseUrl()} — the request-derived path and query
+     * can only ever populate the path/query components of that same authority,
+     * never redefine it. Both are already-authorized/opaque data by this point
+     * (path matched an allowed-path entry upstream; query is forwarded verbatim
+     * as the proxy contract requires) and are passed through with
+     * {@code build(true)} so they are not re-encoded.
+     */
+    URI buildTargetUrl(HttpServletRequest request) {
+        UriComponentsBuilder builder = UriComponentsBuilder
+                .fromHttpUrl(backendProperties.baseUrl())
+                .path(request.getRequestURI());
         String query = request.getQueryString();
         if (query != null && !query.isBlank()) {
-            url.append('?').append(query);
+            builder.query(query);
         }
-        return url.toString();
+        return builder.build(true).toUri();
     }
 
     HttpHeaders copyRequestHeaders(HttpServletRequest request) {

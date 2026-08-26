@@ -48,7 +48,7 @@ class FmarDemoRunnerTest {
     void assetQueryPath_buildsQueryString() {
         String path = runner.assetQueryPath();
 
-        assertThat(path).startsWith("/assets?");
+        assertThat(path).startsWith("/api/v1/fmar/assets?");
         assertThat(path).contains("importMpan=" + MPAN);
         // Space in the postcode must be URL-encoded.
         assertThat(path).contains("postcode=SW1A+1AA");
@@ -68,7 +68,7 @@ class FmarDemoRunnerTest {
 
     @Test @DisplayName("registerPath() embeds the FSP id")
     void registerPath_embedsFspId() {
-        assertThat(runner.registerPath()).isEqualTo("/fsp/" + fspId + "/assets");
+        assertThat(runner.registerPath()).isEqualTo("/api/v1/fmar/fsp/" + fspId + "/assets");
     }
 
     @Test @DisplayName("senderHeaders() sets the FMAR sender headers")

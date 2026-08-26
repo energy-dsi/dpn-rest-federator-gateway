@@ -48,7 +48,7 @@ public class OcspVerificationServiceImpl implements OcspVerificationService {
     private static final String MN_BASE_URL_PROP     = "management.node.base.url";
     private static final String TRUSTSTORE_PATH_PROP = "idp.truststore.path";
     private static final String TRUSTSTORE_PASS_PROP = "idp.truststore.password";
-    private static final String OCSP_PATH            = "/api/v1/certificate/ocsp?clientId=";
+    private static final String OCSP_PATH            = "/api/v1/certificate/ocsp";
 
     private static final Tracer TRACER =
             OpenTelemetryConfig.get().getTracer("org.dsi.dpn.federator.rest.framework.server.ocsp");
@@ -113,12 +113,20 @@ public class OcspVerificationServiceImpl implements OcspVerificationService {
     }
 
     private OcspStatus checkStatus(String clientId) throws Exception {
-        // Fix for gRPC bug: always pass the actual clientId, never empty string
-        String url   = managementNodeBaseUrl + OCSP_PATH + clientId;
+        // Fix for gRPC bug: always pass the actual clientId, never empty string.
+        // Built via UriComponentsBuilder (not string concatenation) so clientId —
+        // JWT-derived, but still request-influenced data — can only ever populate
+        // the clientId query parameter's value, never redefine the destination
+        // host or smuggle extra query parameters via '&'/'='.
+        URI url = org.springframework.web.util.UriComponentsBuilder
+                .fromHttpUrl(managementNodeBaseUrl + OCSP_PATH)
+                .queryParam("clientId", clientId)
+                .build()
+                .toUri();
         String token = idpTokenService.fetchToken();
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(url)
                 .header("Authorization", "Bearer " + token)
                 .header("Content-Type", "application/json")
                 .GET()

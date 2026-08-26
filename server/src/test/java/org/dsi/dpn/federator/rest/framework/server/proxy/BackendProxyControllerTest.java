@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.dsi.dpn.federator.rest.framework.server.proxy;
 
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -54,17 +55,17 @@ class BackendProxyControllerTest {
 
     @Test @DisplayName("buildTargetUrl() appends the path and query string")
     void buildTargetUrl_withQuery() {
-        String url = controller.buildTargetUrl(
+        URI url = controller.buildTargetUrl(
                 request("GET", "/assets", "importMpan=1000000000001&postcode=SW1A+1AA"));
 
-        assertThat(url).isEqualTo(
-                BASE_URL + "/assets?importMpan=1000000000001&postcode=SW1A+1AA");
+        assertThat(url).isEqualTo(URI.create(
+                BASE_URL + "/assets?importMpan=1000000000001&postcode=SW1A+1AA"));
     }
 
     @Test @DisplayName("buildTargetUrl() omits the '?' when there is no query string")
     void buildTargetUrl_withoutQuery() {
         assertThat(controller.buildTargetUrl(request("POST", "/fsp/abc/assets", null)))
-                .isEqualTo(BASE_URL + "/fsp/abc/assets");
+                .isEqualTo(URI.create(BASE_URL + "/fsp/abc/assets"));
     }
 
     @Test @DisplayName("A trailing slash on the base URL does not produce a double slash")
@@ -73,7 +74,7 @@ class BackendProxyControllerTest {
                 restTemplate, new BackendProperties(BASE_URL + "/", API_KEY));
 
         assertThat(c.buildTargetUrl(request("GET", "/assets", null)))
-                .isEqualTo(BASE_URL + "/assets");
+                .isEqualTo(URI.create(BASE_URL + "/assets"));
     }
 
     // ── Header handling ───────────────────────────────────────────────────────
@@ -121,7 +122,7 @@ class BackendProxyControllerTest {
     @Test @DisplayName("Attaches the API key and returns the backend's response")
     void forward_attachesApiKeyAndReturnsResponse() {
         byte[] backendBody = "{\"assetName\":\"Battery\"}".getBytes(StandardCharsets.UTF_8);
-        when(restTemplate.exchange(any(String.class), eq(HttpMethod.GET),
+        when(restTemplate.exchange(any(URI.class), eq(HttpMethod.GET),
                 any(HttpEntity.class), eq(byte[].class)))
                 .thenReturn(ResponseEntity.ok(backendBody));
 
@@ -132,7 +133,7 @@ class BackendProxyControllerTest {
         assertThat(resp.getBody()).isEqualTo(backendBody);
 
         var captor = forClass(HttpEntity.class);
-        verify(restTemplate).exchange(any(String.class), eq(HttpMethod.GET),
+        verify(restTemplate).exchange(any(URI.class), eq(HttpMethod.GET),
                 captor.capture(), eq(byte[].class));
         assertThat(captor.getValue().getHeaders()
                 .getFirst(BackendProperties.API_KEY_HEADER)).isEqualTo(API_KEY);
@@ -140,7 +141,7 @@ class BackendProxyControllerTest {
 
     @Test @DisplayName("Passes a backend 4xx through unchanged")
     void forward_passesThroughBackendError() {
-        when(restTemplate.exchange(any(String.class), any(HttpMethod.class),
+        when(restTemplate.exchange(any(URI.class), any(HttpMethod.class),
                 any(HttpEntity.class), eq(byte[].class)))
                 .thenThrow(HttpClientErrorException.create(
                         HttpStatus.CONFLICT, "Conflict", new HttpHeaders(),
@@ -157,7 +158,7 @@ class BackendProxyControllerTest {
 
     @Test @DisplayName("An unreachable backend yields 502")
     void forward_unreachableBackend() {
-        when(restTemplate.exchange(any(String.class), any(HttpMethod.class),
+        when(restTemplate.exchange(any(URI.class), any(HttpMethod.class),
                 any(HttpEntity.class), eq(byte[].class)))
                 .thenThrow(new ResourceAccessException("connection refused"));
 

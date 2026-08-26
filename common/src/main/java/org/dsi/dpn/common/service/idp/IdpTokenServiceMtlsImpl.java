@@ -38,6 +38,7 @@ public class IdpTokenServiceMtlsImpl extends AbstractIdpTokenService {
                 objectMapper);
         Properties properties = PropertyUtil.getPropertiesFromFilePath(COMMON_CONFIG_PROPERTIES);
         this.idpTokenUrl = properties.getProperty("idp.token.url");
+        requireHttps("idp.token.url", idpTokenUrl);
         this.idpClientId = properties.getProperty("idp.client.id");
         /*  This is combined client secret + mTLS */
         this.idpClientSecret = properties.getProperty("idp.client.secret");

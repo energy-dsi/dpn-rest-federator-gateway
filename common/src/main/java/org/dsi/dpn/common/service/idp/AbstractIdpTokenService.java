@@ -42,6 +42,19 @@ public abstract class AbstractIdpTokenService implements IdpTokenService {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * Fails fast if a configured IDP endpoint is not HTTPS. Client credentials
+     * (client secret, or the mTLS handshake itself) are sent to this URL, so a
+     * plaintext scheme would submit that sensitive material over an unsecured
+     * channel (CWE-319) — reject it at startup rather than at request time.
+     */
+    protected static void requireHttps(String propertyName, String url) {
+        if (url != null && !url.isBlank() && !url.regionMatches(true, 0, "https://", 0, 8)) {
+            throw new IllegalStateException(
+                    propertyName + " must use https:// — refusing to send IDP credentials over " + url);
+        }
+    }
+
     @Override
     public boolean verifyToken(String token) {
         final String componentName = "idp-jwks-service";

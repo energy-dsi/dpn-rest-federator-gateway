@@ -43,7 +43,7 @@ import org.dsi.dpn.common.utils.SSLUtils;
 @Slf4j
 public class OcspClientVerificationServiceImpl implements OcspClientVerificationService {
 
-    private static final String OCSP_PATH         = "/api/v1/certificate/ocsp?clientId=";
+    private static final String OCSP_PATH         = "/api/v1/certificate/ocsp";
     private static final String MN_BASE_URL_PROP  = "management.node.base.url";
 
     private static final Tracer TRACER =
@@ -114,11 +114,19 @@ public class OcspClientVerificationServiceImpl implements OcspClientVerification
     }
 
     private OcspStatus checkStatus(String producerClientId) throws Exception {
-        String url   = managementNodeBaseUrl + OCSP_PATH + producerClientId;
+        // Built via UriComponentsBuilder (not string concatenation) so
+        // producerClientId can only ever populate the clientId query
+        // parameter's value, never redefine the destination host or smuggle
+        // extra query parameters via '&'/'='.
+        URI url = org.springframework.web.util.UriComponentsBuilder
+                .fromHttpUrl(managementNodeBaseUrl + OCSP_PATH)
+                .queryParam("clientId", producerClientId)
+                .build()
+                .toUri();
         String token = idpTokenService.fetchToken();
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
+                .uri(url)
                 .header("Authorization", "Bearer " + token)
                 .header("Content-Type", "application/json")
                 .GET()
