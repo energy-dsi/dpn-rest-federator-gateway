@@ -34,9 +34,13 @@ public class HttpClientFactoryUtils {
                         SSLUtils.createSSLContext(keystorePath, keystorePassword, truststorePath, truststorePassword);
             }
 
+            // Pinned for the same reason the OCSP clients pin it: java.net.http.HttpClient
+            // defaults to HTTP_2 and negotiates it via ALPN if the far side (Keycloak)
+            // advertises it, which this codebase doesn't otherwise rely on anywhere.
             return HttpClient.newBuilder()
                     .sslContext(sslContext)
                     .connectTimeout(Duration.ofSeconds(HTTP_TIMEOUT))
+                    .version(HttpClient.Version.HTTP_1_1)
                     .build();
 
         } catch (Exception e) {
@@ -49,7 +53,10 @@ public class HttpClientFactoryUtils {
             String truststorePath = properties.getProperty("idp.truststore.path");
             String truststorePassword = properties.getProperty("idp.truststore.password");
             SSLContext sslContext = SSLUtils.createSSLContextWithTrustStore(truststorePath, truststorePassword);
-            return HttpClient.newBuilder().sslContext(sslContext).build();
+            return HttpClient.newBuilder()
+                    .sslContext(sslContext)
+                    .version(HttpClient.Version.HTTP_1_1)
+                    .build();
         } catch (Exception e) {
             throw new FederatorSslException("Failed to create HttpClient", e);
         }
