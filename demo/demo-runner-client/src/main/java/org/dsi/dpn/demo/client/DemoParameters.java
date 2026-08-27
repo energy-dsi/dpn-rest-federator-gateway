@@ -61,11 +61,22 @@ public record DemoParameters(
     /** A random FSP id keeps repeat demo runs from colliding when none is supplied. */
     private static UUID resolveFspId() {
         String configured = resolveValue("FSP_ID", "federator.rest.demo.fsp.id", "");
-        return configured.isBlank() ? UUID.randomUUID() : UUID.fromString(configured);
+        return configured.isBlank() ? UUID.randomUUID() : parseUuid("FSP_ID", configured);
     }
 
     private static UUID optionalUuid(String value) {
-        return value.isBlank() ? null : UUID.fromString(value);
+        return value.isBlank() ? null : parseUuid("ASSET_ID", value);
+    }
+
+    private static UUID parseUuid(String name, String value) {
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException(
+                    name + " must be a valid UUID, or blank ("
+                            + (name.equals("FSP_ID") ? "a random one is generated" : "it is omitted")
+                            + ") -- got '" + value + "'", e);
+        }
     }
 
     private static String resolveValue(String envVar, String propertyKey, String defaultValue) {

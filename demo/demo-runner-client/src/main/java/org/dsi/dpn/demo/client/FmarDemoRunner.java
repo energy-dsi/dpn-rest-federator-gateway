@@ -259,8 +259,10 @@ public class FmarDemoRunner {
             try {
                 params = DemoParameters.resolve();
             } catch (IllegalArgumentException e) {
+                // DemoParameters.resolve() throws this for more than one reason (missing
+                // PRODUCT_NAME, or an ASSET_ID/FSP_ID that isn't a valid UUID) -- its own
+                // message already names the actual problem, so surface only that.
                 log.error(e.getMessage());
-                log.error("Set PRODUCT_NAME to the DSM data product name for this consumer.");
                 System.exit(1);
                 return;
             }
