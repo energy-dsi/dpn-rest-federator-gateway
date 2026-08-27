@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        Demo Runner Server — EXAMPLE ONLY, not part of the REST Federator gateway.
+
+        Stands in for a participant's own backend data-source API. The REST
+        Federator gateway forwards authorized requests here after it has done
+        mTLS/JWT/OCSP/product-path checks; this service knows nothing about the
+        DPN trust chain and only requires the shared API key.
+
+        Implements a subset of the MHHS FMAR specification:
+          GET  /assets                  — look up an asset by MPAN
+          POST /fsp/{fspId}/assets      — register a new asset
+        See https://api.swaggerhub.com/apis/MHHSPROGRAMME/fmar-specification-api-0.5draft/0.5.0-draft
+
+        Deployed as its own container, separate from the gateway.
+    -->
+
+    <parent>
+        <groupId>org.dsi.dpn</groupId>
+        <artifactId>rest-federator-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>demo-runner-server</artifactId>
+    <packaging>jar</packaging>
+    <name>DSI REST Federator — Demo Runner Server (example backend)</name>
+
+    <description>
+        Example backend service exposing FMAR asset query/registration endpoints,
+        used to demonstrate the REST Federator gateway end to end. Illustrative
+        only — data is held in memory and is not persisted.
+    </description>
+
+
+    <dependencies>
+        <!-- VaultSslBundleRegistrar + OpenTelemetry telemetry, shared with the gateway
+             so this demo backend can terminate HTTPS with the same Vault-issued
+             certificate and emit the same traces/spans. -->
+        <dependency>
+            <groupId>org.dsi.dpn</groupId>
+            <artifactId>rest-federator-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Swagger UI / OpenAPI for the two FMAR endpoints -->
+        <dependency>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>${springdoc.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

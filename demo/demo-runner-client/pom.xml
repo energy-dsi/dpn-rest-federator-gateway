@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        Demo Runner Client — EXAMPLE ONLY, not part of the REST Federator gateway.
+
+        Demonstrates how a DPN participant consumes a federated REST product:
+        it imports the rest-federator-client jar and calls a producer through
+        the REST Federator gateway. All mTLS, JWT, OCSP and path validation
+        live in that library — this module only builds requests and formats
+        the results.
+
+        rest-federator-client must be installed to the local Maven repository
+        (or available from the team's artifact repository) first:
+          mvn install -f ../../client/pom.xml
+
+        Packaged as an executable jar and run as a one-shot Kubernetes Job.
+    -->
+
+    <parent>
+        <groupId>org.dsi.dpn</groupId>
+        <artifactId>rest-federator-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>demo-runner-client</artifactId>
+    <packaging>jar</packaging>
+    <name>DSI REST Federator — Demo Runner Client (example consumer)</name>
+
+    <description>
+        Example consumer application that calls a producer's FMAR asset
+        endpoints through the REST Federator gateway, using the
+        rest-federator-client library. Illustrative only.
+    </description>
+
+
+    <dependencies>
+
+        <!-- The REST Federator client library — the whole point of this example. -->
+        <dependency>
+            <groupId>org.dsi.dpn</groupId>
+            <artifactId>rest-federator-client</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!--
+                        Not a Spring application, but Boot's repackage produces a
+                        single runnable jar with dependencies nested, which is what
+                        the container entrypoint (java -jar) expects.
+                    -->
+                    <mainClass>org.dsi.dpn.demo.client.FmarDemoRunner</mainClass>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals><goal>repackage</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

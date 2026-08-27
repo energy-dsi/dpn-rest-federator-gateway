@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        REST Federator Client — importable library jar for consumers.
+
+        Contains the consumer-side RestClient (mTLS + JWT + OCSP-aware HTTP
+        client that bootstraps itself from the Management Node) and the
+        client-side OCSP verification service. No servlet container, no
+        Spring Security — just enough Spring (WebFlux's WebClient) to make
+        outbound mTLS calls.
+
+        Depends on the existing federator jar for common utilities
+        (PropertyUtil, SSLUtils, GRPCUtils, ManagementNodeDataHandler,
+        ConsumerConfigService, IdpTokenService).
+    -->
+
+    <parent>
+        <groupId>org.dsi.dpn</groupId>
+        <artifactId>rest-federator-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>rest-federator-client</artifactId>
+    <packaging>jar</packaging>
+    <name>DSI REST Federator — Client (Consumer-side library)</name>
+
+    <description>
+        Consumer-side REST Federator client library. Importable jar exposing
+        RestClient (mTLS, JWT bearer tokens, OCSP revocation checks, Management
+        Node bootstrap, certificate hot-reload). No business/example code.
+    </description>
+
+
+    <dependencies>
+
+        <!-- ── Vendored DPN platform plumbing (see common/) ───────────── -->
+        <dependency>
+            <groupId>org.dsi.dpn</groupId>
+            <artifactId>rest-federator-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- ── WebClient (mTLS) — no servlet container needed ───────────── -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+
+        <!-- ── Lombok ────────────────────────────────────────────────── -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- ── Test ──────────────────────────────────────────────────── -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!-- Plain library jar — not an executable Spring Boot app. -->
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>

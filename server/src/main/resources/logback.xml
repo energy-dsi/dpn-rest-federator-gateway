@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+    Logback configuration for rest-federator-server.
+
+    Mirrors dpn-federator's src/main/resources/logback.xml so REST and gRPC
+    services produce format-compatible stdout and identical OTLP log records.
+
+    This file also deliberately shadows the logback.xml bundled inside the
+    vendored federator jar: src/main/resources compiles to target/classes
+    (BOOT-INF/classes when packaged), which precedes dependency jars on the
+    classpath, so this is the config Logback actually loads.
+
+    Both OpenTelemetry appender classes referenced below ship in
+    opentelemetry-logback-mdc-1.0 and opentelemetry-logback-appender-1.0,
+    which common/pom.xml declares, so they are on the classpath of every
+    application that depends on rest-federator-common.
+
+    OpenTelemetryConfig.initialize() calls OpenTelemetryAppender.install(...)
+    at startup, which is what hands the OTLP appender below its SDK instance.
+    Until that runs the appender simply buffers/no-ops rather than failing.
+-->
+<configuration>
+
+    <!-- Human-readable stdout. trace_id/span_id are rendered from the MDC,
+         which OTEL_MDC populates from the active span before the event gets
+         here; they render empty for log statements made outside any span. -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} [trace_id=%X{trace_id:-}, span_id=%X{span_id:-}] - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="ASYNC_CONSOLE" class="ch.qos.logback.classic.AsyncAppender">
+        <discardingThreshold>0</discardingThreshold>
+        <appender-ref ref="CONSOLE"/>
+        <neverBlock>true</neverBlock>
+    </appender>
+
+    <!-- Populates MDC with trace_id/span_id/trace_flags from the active span
+         before the event reaches CONSOLE's %X{...} pattern. Only affects the
+         stdout path; the OTLP appender reads trace context straight from the
+         Context API regardless. -->
+    <appender name="OTEL_MDC" class="io.opentelemetry.instrumentation.logback.mdc.v1_0.OpenTelemetryAppender">
+        <appender-ref ref="ASYNC_CONSOLE"/>
+    </appender>
+
+    <!-- Exports full OTel log records over OTLP to the collector. -->
+    <appender name="OpenTelemetry" class="io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender">
+        <captureExperimentalAttributes>true</captureExperimentalAttributes>
+        <captureCodeAttributes>true</captureCodeAttributes>
+        <captureMdcAttributes>*</captureMdcAttributes>
+        <!-- Forwards SLF4J key-value pairs (event.name, component.name,
+             heartbeat.* from HeartbeatService, severity.override from
+             CriticalLogUtil) to the collector. Without this, .addKeyValue(...)
+             attributes are silently dropped on the OTLP path. -->
+        <captureKeyValuePairAttributes>true</captureKeyValuePairAttributes>
+        <captureLoggerContext>true</captureLoggerContext>
+    </appender>
+
+    <logger name="org.dsi.dpn.common" level="DEBUG"/>
+    <logger name="org.dsi.dpn.federator" level="DEBUG"/>
+
+    <!-- LOOP BREAKER. CollectorUnavailableLogHandler reports a failed OTLP
+         export by logging a WARN. If that WARN reached the OpenTelemetry
+         appender it would be exported too, fail too, and trigger another
+         WARN - amplifying without bound whenever the collector is
+         unreachable. additivity="false" with only the console appender keeps
+         those notices on stdout and off the OTLP path. The OTel SDK's own
+         internal logger is pinned the same way for the same reason. -->
+    <logger name="org.dsi.dpn.common.telemetry.CollectorUnavailableLogHandler" level="WARN" additivity="false">
+        <appender-ref ref="ASYNC_CONSOLE"/>
+    </logger>
+    <logger name="io.opentelemetry" level="WARN" additivity="false">
+        <appender-ref ref="ASYNC_CONSOLE"/>
+    </logger>
+
+    <!-- Two independent delivery chains over the same events: OTEL_MDC ->
+         ASYNC_CONSOLE for stdout, and OpenTelemetry for OTLP. Each event
+         reaches stdout once and the collector once - not duplicated. -->
+    <root level="INFO">
+        <appender-ref ref="OTEL_MDC"/>
+        <appender-ref ref="OpenTelemetry"/>
+    </root>
+
+</configuration>

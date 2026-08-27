@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+             https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+        REST Federator Common — DPN platform plumbing shared by the gateway and
+        the client library.
+
+        Vendored from the gRPC Federator (dpn-federator-gateway) so this
+        repository has no dependency on an externally published artifact:
+          * PropertyUtil            properties-file bootstrap and secret overrides
+          * SSLUtils                mTLS SSLContext / key + trust managers from PKCS12
+          * HttpClientFactoryUtils  JDK HttpClient with or without mTLS
+          * IdpTokenService (+3)    Keycloak token acquisition
+                                    (private_key_jwt / mTLS / client_secret)
+          * SecretProvider (+2)     Vault-backed or no-op secret resolution
+          * ManagementNodeDataHandler, ConfigService (+2), InMemoryConfigurationStore
+          * RedisUtil               token cache
+          * model/dto               Management Node payload types
+
+        Trimmed on the way in: gRPC channel credentials, file-transfer checksums
+        and the Kafka/cloud-storage helpers, none of which the REST stack uses.
+        Packages were renamed to org.dsi.dpn.common.
+    -->
+
+    <parent>
+        <groupId>org.dsi.dpn</groupId>
+        <artifactId>rest-federator-parent</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>rest-federator-common</artifactId>
+    <packaging>jar</packaging>
+    <name>DSI REST Federator — Common (DPN platform plumbing)</name>
+
+    <description>
+        Shared library holding configuration loading, mTLS, IDP token acquisition
+        and Management Node communication for the REST Federator gateway and
+        client. Vendored from the gRPC Federator; no external federator artifact
+        is required.
+    </description>
+
+
+    <dependencies>
+
+        <!-- JSON — Management Node payloads and token responses -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Signed JWT client assertions for private_key_jwt -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+            <version>${nimbus.version}</version>
+        </dependency>
+
+        <!-- Token cache -->
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>${jedis.version}</version>
+        </dependency>
+
+        <!-- Retry / circuit breaker around Management Node calls -->
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-retry</artifactId>
+            <version>${resilience4j.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-circuitbreaker</artifactId>
+            <version>${resilience4j.version}</version>
+        </dependency>
+
+        <!-- Vault-backed secret resolution (keystore/truststore passwords) -->
+        <dependency>
+            <groupId>com.bettercloud</groupId>
+            <artifactId>vault-java-driver</artifactId>
+            <version>${vault.driver.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-lang3</artifactId>
+            <version>${commons.lang3.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.jspecify</groupId>
+            <artifactId>jspecify</artifactId>
+            <version>${jspecify.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Required at compile time by opentelemetry-logback-appender-1.0's API
+             (extends Logback's UnsynchronizedAppenderBase). Version managed by the
+             Spring Boot parent BOM. -->
+        <dependency>
+            <groupId>ch.qos.logback</groupId>
+            <artifactId>logback-classic</artifactId>
+        </dependency>
+
+        <!-- VaultSslBundleRegistrar (Spring Boot's SslBundleRegistrar extension
+             point) is shared here so every Spring Boot app in this repo — the
+             gateway and demo-runner-server — can source their inbound HTTPS
+             listener from Vault without duplicating the class. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- OTEL telemetry — traces/spans + logback correlation, same libraries
+             and versions dpn-federator uses (see common/telemetry package). -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-context</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-extension-autoconfigure</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-logback-appender-1.0</artifactId>
+            <version>${opentelemetry.instrumentation.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-logback-mdc-1.0</artifactId>
+            <version>${opentelemetry.instrumentation.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!-- Plain library jar, not an executable application. -->
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
