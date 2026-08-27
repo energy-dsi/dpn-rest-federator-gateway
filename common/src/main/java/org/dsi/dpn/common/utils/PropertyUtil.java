@@ -108,6 +108,7 @@ public class PropertyUtil {
     private static final String SERVER_TRUSTSTORE_PASSWORD = "server.truststorePassword";
     private static final String IDP_KEYSTORE_PASSWORD = "idp.keystore.password";
     private static final String IDP_TRUSTSTORE_PASSWORD = "idp.truststore.password";
+    private static final String VAULT_TLS_ENABLED_PROPERTY = "vault.tls.enabled";
 
     private static PropertyUtil instance;
     public final Properties properties;
@@ -592,6 +593,22 @@ public class PropertyUtil {
                         ? testMappingsOverride
                         : VaultMappings.getMappings();
 
+        // When vault.tls.enabled=true (the default, and every environment this
+        // application actually runs in), TLS material is built entirely in-memory
+        // from Vault-sourced certs (VaultTlsSupport / VaultKeystoreProvider) --
+        // every consumer of idp.keystore.password/idp.truststore.password already
+        // branches around them in that mode (HttpClientFactoryUtils.
+        // createHttpClientWithMtls, JwtDecoderConfig, RestClient.buildWebClient,
+        // OcspVerificationServiceImpl.buildHttpClient). The two properties are only
+        // ever read by the file-based fallback branches those classes take when
+        // Vault TLS is disabled. Attempting the Vault lookup anyway is not just
+        // wasted work: the keystore-password/truststore-password paths this
+        // mapping points at were never written for the in-memory approach, so it
+        // always 404s and logs a startup-time ERROR stack trace for a secret nothing
+        // will ever read.
+        boolean vaultTlsEnabled = Boolean.parseBoolean(
+                properties.getProperty(VAULT_TLS_ENABLED_PROPERTY, "true"));
+
         for (Map.Entry<String, String> entry : mappings.entrySet()) {
 
             String propertyKey = entry.getKey();
@@ -601,6 +618,11 @@ public class PropertyUtil {
             }
 
             if (!properties.containsKey(propertyKey)) continue;
+
+            if (vaultTlsEnabled
+                    && (IDP_KEYSTORE_PASSWORD.equals(propertyKey) || IDP_TRUSTSTORE_PASSWORD.equals(propertyKey))) {
+                continue;
+            }
 
             String[] parts = mapping.split("#");
             String path = parts[0];
