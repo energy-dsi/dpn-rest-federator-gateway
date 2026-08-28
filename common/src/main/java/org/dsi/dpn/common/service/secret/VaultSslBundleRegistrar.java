@@ -126,6 +126,12 @@ public class VaultSslBundleRegistrar implements SslBundleRegistrar {
 
     private SslBundle buildBundle(String basePath, String alias) throws Exception {
         Properties common = commonConfig();
+        log.info(
+                "VaultSslBundleRegistrar loaded {} properties for '{}'; vault.uri='{}', vault.auth.method='{}'",
+                common.size(),
+                bundleName,
+                common.getProperty("vault.uri"),
+                common.getProperty("vault.auth.method"));
         SecretProvider provider = PropertyUtil.createSecretProvider(common);
         char[] password = ephemeralPassword();
         KeyStore identity = VaultKeystoreProvider.buildIdentityKeyStore(provider, basePath, alias, password);
