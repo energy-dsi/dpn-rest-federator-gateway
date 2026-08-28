@@ -7,14 +7,10 @@ package org.dsi.dpn.common.service.secret;
 import com.bettercloud.vault.SslConfig;
 import com.bettercloud.vault.Vault;
 import com.bettercloud.vault.VaultConfig;
-import com.bettercloud.vault.api.Logical;
 import com.bettercloud.vault.response.AuthResponse;
 import com.bettercloud.vault.response.LogicalResponse;
-import com.bettercloud.vault.rest.Rest;
-import com.bettercloud.vault.rest.RestResponse;
 
 import java.io.FileInputStream;
-import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -158,31 +154,8 @@ public class VaultClient {
         try {
             // normalize path safely
             String normalizedPath = path.startsWith("/") ? path.substring(1) : path;
-            // pki-client is a KV v2 mount. Both Logical.read(path) and
-            // read(path, Boolean, Integer) first call engineVersionForSecretPath(),
-            // which queries /v1/sys/mounts/<mount> to detect the KV version — a
-            // permission this scoped AppRole policy does not grant, so that lookup
-            // is denied before the driver ever reaches the actual secret path.
-            // Read the v2 "data/" path directly over the driver's low-level Rest
-            // client instead, then hand the raw response to LogicalResponse's
-            // public constructor with logicalOperations.readV2 so it does the
-            // same data/metadata unwrapping the convenience method would have.
-            String fullPath = PKI_MOUNT + "/data/" + normalizedPath;
-            RestResponse restResponse = new Rest()
-                    .url(vaultConfig.getAddress() + "/v1/" + fullPath)
-                    .header("X-Vault-Token", vaultConfig.getToken())
-                    .connectTimeoutSeconds(vaultConfig.getOpenTimeout())
-                    .readTimeoutSeconds(vaultConfig.getReadTimeout())
-                    .sslVerification(vaultConfig.getSslConfig().isVerify())
-                    .sslContext(vaultConfig.getSslConfig().getSslContext())
-                    .get();
-
-            if (restResponse.getStatus() != 200) {
-                throw new RuntimeException("Vault responded with HTTP status code: " + restResponse.getStatus()
-                        + "\nResponse body: " + new String(restResponse.getBody(), StandardCharsets.UTF_8));
-            }
-
-            LogicalResponse response = new LogicalResponse(restResponse, 0, Logical.logicalOperations.readV2);
+            String fullPath = PKI_MOUNT + "/" + normalizedPath;
+            LogicalResponse response = vault.logical().read(fullPath);
             return response.getData().get(key);
         } catch (Exception e) {
             throw new RuntimeException("Vault read failed", e);
