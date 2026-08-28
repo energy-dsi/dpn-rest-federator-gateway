@@ -156,6 +156,11 @@ public class VaultClient {
             String normalizedPath = path.startsWith("/") ? path.substring(1) : path;
             String fullPath = PKI_MOUNT + "/" + normalizedPath;
             LogicalResponse response = vault.logical().read(fullPath);
+            LOGGER.info(
+                    "Vault read '{}' -> HTTP {}, keys returned: {}",
+                    fullPath,
+                    response.getRestResponse() != null ? response.getRestResponse().getStatus() : "n/a",
+                    response.getData() != null ? response.getData().keySet() : "null data map");
             return response.getData().get(key);
         } catch (Exception e) {
             throw new RuntimeException("Vault read failed", e);
