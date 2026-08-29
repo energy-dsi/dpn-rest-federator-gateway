@@ -158,10 +158,15 @@ public class PropertyUtil {
             };
         } catch (Exception e) {
             LOGGER.error("Invalid Vault authentication configuration", e);
+            // Startup runs before logback's appenders are fully started, so the ERROR above
+            // can be silently dropped; mirror it to stdout, which is available immediately.
+            System.out.println("[VaultDiag] Invalid Vault authentication configuration: " + e);
+            e.printStackTrace(System.out);
             return new NoopSecretProvider();
         }
 
         if (authConfig == null) {
+            System.out.println("[VaultDiag] authConfig is null (blank role_id/secret_id?) — returning NoopSecretProvider");
             return new NoopSecretProvider();
         }
 
@@ -179,6 +184,16 @@ public class PropertyUtil {
                 return new VaultSecretProvider(vaultUri, authConfig, vaultTruststorePath, vaultTruststorePassword);
             } catch (Exception e) {
                 LOGGER.error("Failed to create Vault secret provider for auth method {}", authMethod, e);
+                // Startup runs before logback's appenders are fully started, so the ERROR above
+                // can be silently dropped; mirror it to stdout, which is available immediately.
+                System.out.println("[VaultDiag] Failed to create Vault secret provider for auth method "
+                        + authMethod + ": " + e);
+                Throwable cause = e;
+                while (cause != null) {
+                    System.out.println("[VaultDiag]   caused by: " + cause);
+                    cause = cause.getCause();
+                }
+                e.printStackTrace(System.out);
                 return new NoopSecretProvider();
             }
         });
