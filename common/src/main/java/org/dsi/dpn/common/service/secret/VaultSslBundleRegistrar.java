@@ -126,19 +126,7 @@ public class VaultSslBundleRegistrar implements SslBundleRegistrar {
 
     private SslBundle buildBundle(String basePath, String alias) throws Exception {
         Properties common = commonConfig();
-        log.info(
-                "VaultSslBundleRegistrar loaded {} properties for '{}'; vault.uri='{}', vault.auth.method='{}'",
-                common.size(),
-                bundleName,
-                common.getProperty("vault.uri"),
-                common.getProperty("vault.auth.method"));
         SecretProvider provider = PropertyUtil.createSecretProvider(common);
-        log.info(
-                "VaultSslBundleRegistrar resolved provider type: {}; VAULT_ROLE_ID env present={}, "
-                        + "VAULT_SECRET_ID env present={}",
-                provider.getClass().getSimpleName(),
-                System.getenv("VAULT_ROLE_ID") != null && !System.getenv("VAULT_ROLE_ID").isBlank(),
-                System.getenv("VAULT_SECRET_ID") != null && !System.getenv("VAULT_SECRET_ID").isBlank());
         char[] password = ephemeralPassword();
         KeyStore identity = VaultKeystoreProvider.buildIdentityKeyStore(provider, basePath, alias, password);
         KeyStore trust = VaultKeystoreProvider.buildTrustStore(provider, basePath, password);
