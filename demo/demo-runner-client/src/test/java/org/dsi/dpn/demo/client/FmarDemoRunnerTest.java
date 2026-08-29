@@ -3,6 +3,7 @@ package org.dsi.dpn.demo.client;
 
 import java.util.Map;
 import java.util.UUID;
+import org.dsi.dpn.federator.rest.framework.client.rest.ProductKey;
 import org.dsi.dpn.federator.rest.framework.client.rest.RestClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -25,7 +26,9 @@ import static org.mockito.Mockito.when;
 @MockitoSettings(strictness = Strictness.LENIENT)
 class FmarDemoRunnerTest {
 
+    static final String ORG      = "Elexon";
     static final String PRODUCT  = "FMAR Asset Registration";
+    static final ProductKey KEY  = new ProductKey(ORG, PRODUCT);
     static final String MPAN     = "1000000000001";
     static final String POSTCODE = "SW1A 1AA";
 
@@ -39,7 +42,7 @@ class FmarDemoRunnerTest {
     void setUp() {
         fspId = UUID.randomUUID();
         params = new DemoParameters(
-                PRODUCT, MPAN, POSTCODE, null, fspId, "fsp-001", "FSP", true);
+                ORG, PRODUCT, MPAN, POSTCODE, null, fspId, "fsp-001", "FSP", true);
         runner = new FmarDemoRunner(params, restClient);
         when(restClient.getAllRegistrations()).thenReturn(Map.of());
     }
@@ -59,7 +62,8 @@ class FmarDemoRunnerTest {
     void assetQueryPath_includesAssetId() {
         UUID assetId = UUID.randomUUID();
         FmarDemoRunner withAssetId = new FmarDemoRunner(
-                new DemoParameters(PRODUCT, MPAN, POSTCODE, assetId, fspId,
+                new DemoParameters(
+                ORG, PRODUCT, MPAN, POSTCODE, assetId, fspId,
                         "fsp-001", "FSP", true),
                 restClient);
 
@@ -100,30 +104,30 @@ class FmarDemoRunnerTest {
 
     @Test @DisplayName("run() executes all four steps against the client")
     void run_executesAllSteps() {
-        when(restClient.get(eq(PRODUCT), anyString(), any()))
+        when(restClient.get(eq(KEY), anyString(), any()))
                 .thenReturn("{\"FMARAssetIdentifier\":\"" + UUID.randomUUID() + "\"}");
-        when(restClient.post(eq(PRODUCT), anyString(), anyString(), any()))
+        when(restClient.post(eq(KEY), anyString(), anyString(), any()))
                 .thenReturn("{\"FMARAssetIdentifier\":\"" + UUID.randomUUID() + "\"}");
 
         runner.run();
 
         // Two GETs (before/after) and two POSTs (register/duplicate).
-        verify(restClient, atLeastOnce()).get(eq(PRODUCT), anyString(), any());
-        verify(restClient, atLeastOnce()).post(eq(PRODUCT), anyString(), anyString(), any());
+        verify(restClient, atLeastOnce()).get(eq(KEY), anyString(), any());
+        verify(restClient, atLeastOnce()).post(eq(KEY), anyString(), anyString(), any());
     }
 
     @Test @DisplayName("run() completes when the first lookup 404s and the duplicate 409s")
     void run_handlesExpectedFailures() {
-        when(restClient.get(eq(PRODUCT), anyString(), any()))
+        when(restClient.get(eq(KEY), anyString(), any()))
                 .thenThrow(new RuntimeException("GET failed: HTTP 404 NOT_FOUND"))
                 .thenReturn("{\"FMARAssetIdentifier\":\"" + UUID.randomUUID() + "\"}");
-        when(restClient.post(eq(PRODUCT), anyString(), anyString(), any()))
+        when(restClient.post(eq(KEY), anyString(), anyString(), any()))
                 .thenReturn("{\"FMARAssetIdentifier\":\"" + UUID.randomUUID() + "\"}")
                 .thenThrow(new RuntimeException("POST failed: HTTP 409 CONFLICT"));
 
         // No exception escapes — expected outcomes are reported, not thrown.
         runner.run();
 
-        verify(restClient, atLeastOnce()).post(eq(PRODUCT), anyString(), anyString(), any());
+        verify(restClient, atLeastOnce()).post(eq(KEY), anyString(), anyString(), any());
     }
 }

@@ -14,10 +14,13 @@ import org.dsi.dpn.common.utils.PropertyUtil;
  * Job's {@code env:} block is templated from Helm values, which the CD pipeline
  * sets per run (see charts/dpn-demo-runner-client).
  *
- * <p>{@code PRODUCT_NAME} is mandatory: it is the DSM data product name the
- * rest-federator-client resolves the producer host and credentials from.
+ * <p>{@code ORGANISATION_NAME} and {@code PRODUCT_NAME} are mandatory: together they identify the
+ * DSM data product, and the rest-federator-client resolves the producer host, internal producer id
+ * and credentials from them. The producer id is never supplied here — it is internal to the
+ * Management Node and the client learns it from getConsumerConfig.
  */
 public record DemoParameters(
+        String organisation,
         String productName,
         String importMpan,
         String postcode,
@@ -38,6 +41,12 @@ public record DemoParameters(
      * @throws IllegalArgumentException if the product name is not supplied
      */
     public static DemoParameters resolve() {
+        String organisation = resolveValue("ORGANISATION_NAME", "federator.rest.organisation", "");
+        if (organisation.isBlank()) {
+            throw new IllegalArgumentException(
+                    "No organisation supplied. Set the ORGANISATION_NAME environment "
+                            + "variable or federator.rest.organisation in client.properties.");
+        }
         String productName = resolveValue("PRODUCT_NAME", "federator.rest.product.name", "");
         if (productName.isBlank()) {
             throw new IllegalArgumentException(
@@ -46,6 +55,7 @@ public record DemoParameters(
         }
 
         return new DemoParameters(
+                organisation,
                 productName,
                 resolveValue("MPAN", "federator.rest.demo.mpan", DEFAULT_MPAN),
                 resolveValue("POSTCODE", "federator.rest.demo.postcode", DEFAULT_POSTCODE),

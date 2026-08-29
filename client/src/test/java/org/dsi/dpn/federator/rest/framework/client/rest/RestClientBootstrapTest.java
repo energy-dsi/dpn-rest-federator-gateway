@@ -33,7 +33,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * Tests covering processConfig() (extracted from bootstrap()),
- * startCertWatcher(), and resolveAndValidate() in RestClient.
+ * startCertWatcher(), and resolve() in RestClient.
  *
  * Uses a subclass that ONLY overrides buildWebClient() so all other
  * real methods are executed and counted by JaCoCo.
@@ -62,10 +62,13 @@ class RestClientBootstrapTest {
         client = new TestClient();
     }
 
+    static final ProductKey FMAR_KEY = new ProductKey("Elexon", "FMAR Product");
+
     ConsumerConfigDTO config(String type, String topic, boolean tls) {
         ProductDTO product = ProductDTO.builder()
                 .name("FMAR Product").type(type).topic(topic).build();
         ProducerDTO producer = ProducerDTO.builder()
+                .name("Elexon")
                 .idpClientId("elexon-prod-id").host("host")
                 .port(BigDecimal.valueOf(8443)).tls(tls)
                 .products(List.of(product)).build();
@@ -78,8 +81,8 @@ class RestClientBootstrapTest {
     void processConfig_registersRestProduct() {
         client.processConfig(config("rest", "/api/v1/fmar/assets", true));
         assertThat(client.getAllRegistrations()).hasSize(1);
-        assertThat(client.getRegistration("FMAR Product")).isPresent();
-        assertThat(client.getRegistration("FMAR Product").get().baseUrl())
+        assertThat(client.getRegistration(FMAR_KEY)).isPresent();
+        assertThat(client.getRegistration(FMAR_KEY).get().baseUrl())
                 .isEqualTo("https://host:8443");
     }
 
@@ -111,7 +114,7 @@ class RestClientBootstrapTest {
     @Test @DisplayName("processConfig() uses http when TLS is false")
     void processConfig_httpWhenNoTls() {
         client.processConfig(config("rest", "/api/v1/data", false));
-        assertThat(client.getRegistration("FMAR Product"))
+        assertThat(client.getRegistration(FMAR_KEY))
                 .hasValueSatisfying(r -> assertThat(r.baseUrl()).startsWith("http://"));
     }
 
@@ -122,7 +125,7 @@ class RestClientBootstrapTest {
                  {"request_type":"POST","request_path":"/api/v1/fmar/assets"},
                  {"request_type":"GET","request_path":"/api/v1/fmar/assets/{mpan}"}]
                 """, true));
-        assertThat(client.getRegistration("FMAR Product"))
+        assertThat(client.getRegistration(FMAR_KEY))
                 .hasValueSatisfying(r -> assertThat(r.allowedPaths()).hasSize(3));
     }
 
@@ -131,7 +134,7 @@ class RestClientBootstrapTest {
         // An empty JSON array grants nothing, so the product is not registered at
         // all rather than registered with a configuration that can never match.
         client.processConfig(config("rest", "[]", true));
-        assertThat(client.getRegistration("FMAR Product")).isEmpty();
+        assertThat(client.getRegistration(FMAR_KEY)).isEmpty();
     }
 
     @Test @DisplayName("processConfig() skips producer with null products")
@@ -148,7 +151,7 @@ class RestClientBootstrapTest {
     @Test @DisplayName("processConfig() stores producerId from producer, not product")
     void processConfig_storesProducerId() {
         client.processConfig(config("rest", "/api/v1/data", true));
-        assertThat(client.getRegistration("FMAR Product"))
+        assertThat(client.getRegistration(FMAR_KEY))
                 .hasValueSatisfying(r -> assertThat(r.producerId()).isEqualTo("elexon-prod-id"));
     }
 
@@ -191,55 +194,42 @@ class RestClientBootstrapTest {
         assertThat(started).isTrue();
     }
 
-    // ── resolveAndValidate() ─────────────────────────────────────────────────
+    // ── resolve() ────────────────────────────────────────────────────────────
 
-    @Test @DisplayName("resolveAndValidate() returns registration for valid product and path")
-    void resolveAndValidate_valid() {
+    private static final ProductKey FMAR = new ProductKey("Elexon", "FMAR");
+
+    @Test @DisplayName("resolve() returns registration for a subscribed product")
+    void resolve_valid() {
         when(ocspService.verify("elexon-prod-id")).thenReturn(OcspStatus.ACTIVE);
         RestClient c = new RestClient(
-                Map.of("FMAR", new RestClient.ProductRegistration(
-                        "elexon-prod-id", "FMAR", "https://host:8443",
-                        List.of(new AllowedPath("GET", "/api/v1/fmar/assets"),
-                                new AllowedPath("GET", "/api/v1/fmar/assets/**")),
+                Map.of(FMAR, new RestClient.ProductRegistration(
+                        "Elexon", "elexon-prod-id", "FMAR", "https://host:8443",
+                        List.of(new AllowedPath("GET", "/api/v1/fmar/assets")),
                         webClient)),
                 idpTokenService, ocspService, Duration.ofSeconds(5));
 
-        var reg = c.resolveAndValidate("FMAR", "/api/v1/fmar/assets");
+        var reg = c.resolve(FMAR);
         assertThat(reg.producerId()).isEqualTo("elexon-prod-id");
     }
 
-    @Test @DisplayName("resolveAndValidate() throws for unknown product")
-    void resolveAndValidate_unknownProduct() {
-        assertThatThrownBy(() -> client.resolveAndValidate("Unknown", "/api/v1/data"))
+    @Test @DisplayName("resolve() throws for an unsubscribed product")
+    void resolve_unknownProduct() {
+        assertThatThrownBy(() -> client.resolve(new ProductKey("Nobody", "Unknown")))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("productName=Unknown");
+                .hasMessageContaining("No REST product registered for");
     }
 
-    @Test @DisplayName("resolveAndValidate() throws for disallowed path")
-    void resolveAndValidate_disallowedPath() {
-        RestClient c = new RestClient(
-                Map.of("FMAR", new RestClient.ProductRegistration(
-                        "elexon-prod-id", "FMAR", "https://host:8443",
-                        List.of(new AllowedPath("GET", "/api/v1/fmar/assets")),
-                        webClient)),
-                idpTokenService, ocspService, Duration.ofSeconds(5));
-
-        assertThatThrownBy(() -> c.resolveAndValidate("FMAR", "/api/v1/admin/secret"))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("not in the allowed paths");
-    }
-
-    @Test @DisplayName("resolveAndValidate() throws when OCSP not ACTIVE")
-    void resolveAndValidate_ocspBlocked() {
+    @Test @DisplayName("resolve() throws when OCSP not ACTIVE")
+    void resolve_ocspBlocked() {
         when(ocspService.verify("elexon-prod-id")).thenReturn(OcspStatus.REVOKED);
         RestClient c = new RestClient(
-                Map.of("FMAR", new RestClient.ProductRegistration(
-                        "elexon-prod-id", "FMAR", "https://host:8443",
+                Map.of(FMAR, new RestClient.ProductRegistration(
+                        "Elexon", "elexon-prod-id", "FMAR", "https://host:8443",
                         List.of(new AllowedPath("GET", "/api/v1/fmar/assets")),
                         webClient)),
                 idpTokenService, ocspService, Duration.ofSeconds(5));
 
-        assertThatThrownBy(() -> c.resolveAndValidate("FMAR", "/api/v1/fmar/assets"))
+        assertThatThrownBy(() -> c.resolve(FMAR))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("OCSP status=REVOKED");
     }

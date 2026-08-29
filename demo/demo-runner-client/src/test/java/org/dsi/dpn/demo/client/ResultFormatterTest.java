@@ -65,7 +65,7 @@ class ResultFormatterTest {
     @Test @DisplayName("parameters() lists every run input")
     void parameters_listsInputs() {
         DemoParameters params = new DemoParameters(
-                "Product A", "1000000000001", "SW1A 1AA", null,
+                "Org A", "Product A", "1000000000001", "SW1A 1AA", null,
                 UUID.randomUUID(), "fsp-001", "FSP", true);
 
         String out = fmt.parameters(params);

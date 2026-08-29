@@ -49,9 +49,14 @@ class RestClientInternalsTest {
     @Mock WebClient.RequestBodySpec        bodySpec;
     @Mock WebClient.ResponseSpec           responseSpec;
 
+    static final String ORG          = "Elexon";
     static final String PRODUCT_NAME = "FMAR Asset Registration";
     static final String PRODUCER_ID  = "elexon-prod-id";
     static final String BASE_URL     = "https://elexon-dpn.neso.gov.uk:8443";
+
+    static ProductKey key(String productName) {
+        return new ProductKey(ORG, productName);
+    }
     static final List<AllowedPath> PATHS = List.of(
             new AllowedPath("GET",  "/api/v1/fmar/assets"),
             new AllowedPath("POST", "/api/v1/fmar/assets"),
@@ -76,39 +81,39 @@ class RestClientInternalsTest {
         when(bodySpec.bodyValue(any())).thenReturn(headersSpec);
     }
 
-    RestClient buildClient(Map<String, RestClient.ProductRegistration> registry) {
+    RestClient buildClient(Map<ProductKey, RestClient.ProductRegistration> registry) {
         return new RestClient(registry, idpTokenService, ocspService, Duration.ofSeconds(5));
     }
 
     RestClient.ProductRegistration reg(String productName) {
         return new RestClient.ProductRegistration(
-                PRODUCER_ID, productName, BASE_URL, PATHS, webClient);
+                ORG, PRODUCER_ID, productName, BASE_URL, PATHS, webClient);
     }
 
     // ── Multiple products ─────────────────────────────────────────────────────
 
-    @Test @DisplayName("Registry with multiple products — each accessible by product name")
+    @Test @DisplayName("Registry with multiple products — each accessible by product key")
     void multipleProducts() {
-        Map<String, RestClient.ProductRegistration> regMap = new HashMap<>();
-        regMap.put("Product A", new RestClient.ProductRegistration(
-                "producer-a", "Product A", "https://host-a:8443",
+        Map<ProductKey, RestClient.ProductRegistration> regMap = new HashMap<>();
+        regMap.put(key("Product A"), new RestClient.ProductRegistration(
+                ORG, "producer-a", "Product A", "https://host-a:8443",
                 List.of(new AllowedPath("GET", "/api/v1/data")), webClient));
-        regMap.put("Product B", new RestClient.ProductRegistration(
-                "producer-b", "Product B", "https://host-b:8443",
+        regMap.put(key("Product B"), new RestClient.ProductRegistration(
+                ORG, "producer-b", "Product B", "https://host-b:8443",
                 List.of(new AllowedPath("GET", "/api/v1/metrics")), webClient));
 
         RestClient client = buildClient(regMap);
 
         assertThat(client.getAllRegistrations()).hasSize(2);
-        assertThat(client.getRegistration("Product A")).isPresent();
-        assertThat(client.getRegistration("Product B")).isPresent();
-        assertThat(client.getRegistration("Product C")).isEmpty();
+        assertThat(client.getRegistration(key("Product A"))).isPresent();
+        assertThat(client.getRegistration(key("Product B"))).isPresent();
+        assertThat(client.getRegistration(key("Product C"))).isEmpty();
     }
 
     @Test @DisplayName("OCSP verify called with producerId from registry, not productName")
     void ocspUsesProducerId_notProductName() {
-        RestClient client = buildClient(Map.of(PRODUCT_NAME, reg(PRODUCT_NAME)));
-        client.get(PRODUCT_NAME, "/api/v1/fmar/assets/1000000000001");
+        RestClient client = buildClient(Map.of(key(PRODUCT_NAME), reg(PRODUCT_NAME)));
+        client.get(key(PRODUCT_NAME), "/api/v1/fmar/assets/1000000000001");
         // OCSP must be called with PRODUCER_ID, never with PRODUCT_NAME
         verify(ocspService).verify(PRODUCER_ID);
         verify(ocspService, never()).verify(PRODUCT_NAME);
@@ -116,8 +121,8 @@ class RestClientInternalsTest {
 
     @Test @DisplayName("post() with empty string payload uses it as-is")
     void post_emptyStringPayload() {
-        RestClient client = buildClient(Map.of(PRODUCT_NAME, reg(PRODUCT_NAME)));
-        client.post(PRODUCT_NAME, "/api/v1/fmar/assets", "");
+        RestClient client = buildClient(Map.of(key(PRODUCT_NAME), reg(PRODUCT_NAME)));
+        client.post(key(PRODUCT_NAME), "/api/v1/fmar/assets", "");
         verify(bodySpec).bodyValue("");
     }
 
@@ -129,15 +134,15 @@ class RestClientInternalsTest {
 
     @Test @DisplayName("getRegistration() returns correct baseUrl")
     void getRegistration_returnsCorrectBaseUrl() {
-        RestClient client = buildClient(Map.of(PRODUCT_NAME, reg(PRODUCT_NAME)));
-        assertThat(client.getRegistration(PRODUCT_NAME))
+        RestClient client = buildClient(Map.of(key(PRODUCT_NAME), reg(PRODUCT_NAME)));
+        assertThat(client.getRegistration(key(PRODUCT_NAME)))
                 .hasValueSatisfying(r -> assertThat(r.baseUrl()).isEqualTo(BASE_URL));
     }
 
     @Test @DisplayName("getRegistration() returns correct allowedPaths")
     void getRegistration_returnsAllowedPaths() {
-        RestClient client = buildClient(Map.of(PRODUCT_NAME, reg(PRODUCT_NAME)));
-        assertThat(client.getRegistration(PRODUCT_NAME))
+        RestClient client = buildClient(Map.of(key(PRODUCT_NAME), reg(PRODUCT_NAME)));
+        assertThat(client.getRegistration(key(PRODUCT_NAME)))
                 .hasValueSatisfying(r ->
                         assertThat(r.allowedPaths()).containsExactlyElementsOf(PATHS));
     }
@@ -149,7 +154,7 @@ class RestClientInternalsTest {
         // Use a testable subclass that exposes startCertWatcher
         AtomicReference<String> warningRef = new AtomicReference<>();
         RestClient client = new RestClient(
-                Map.of(PRODUCT_NAME, reg(PRODUCT_NAME)),
+                Map.of(key(PRODUCT_NAME), reg(PRODUCT_NAME)),
                 idpTokenService, ocspService, Duration.ofSeconds(5)) {
         };
         // No exception thrown — watcher simply not started when keystore not set
@@ -165,7 +170,7 @@ class RestClientInternalsTest {
 
         // Use test RestClient subclass that calls startCertWatcher with real path
         RestClientWithWatcher client = new RestClientWithWatcher(
-                Map.of(PRODUCT_NAME, reg(PRODUCT_NAME)),
+                Map.of(key(PRODUCT_NAME), reg(PRODUCT_NAME)),
                 idpTokenService, ocspService,
                 Duration.ofSeconds(5), p12.toString());
 
@@ -185,12 +190,13 @@ class RestClientInternalsTest {
     @Test @DisplayName("ProductRegistration with same values are equal")
     void productRegistration_equality() {
         var r1 = new RestClient.ProductRegistration(
-                "prod-id", "My Product", "https://host:8443",
+                ORG, "prod-id", "My Product", "https://host:8443",
                 List.of(new AllowedPath("GET", "/api/v1/data")), webClient);
         var r2 = new RestClient.ProductRegistration(
-                "prod-id", "My Product", "https://host:8443",
+                ORG, "prod-id", "My Product", "https://host:8443",
                 List.of(new AllowedPath("GET", "/api/v1/data")), webClient);
         // Records implement equals based on all components
+        assertThat(r1.organisation()).isEqualTo(r2.organisation());
         assertThat(r1.producerId()).isEqualTo(r2.producerId());
         assertThat(r1.productName()).isEqualTo(r2.productName());
         assertThat(r1.baseUrl()).isEqualTo(r2.baseUrl());
@@ -201,7 +207,7 @@ class RestClientInternalsTest {
      * Test subclass that calls startCertWatcher with a configurable keystore path.
      */
     static class RestClientWithWatcher extends RestClient {
-        RestClientWithWatcher(Map<String, ProductRegistration> reg,
+        RestClientWithWatcher(Map<ProductKey, ProductRegistration> reg,
                               IdpTokenService idp,
                               OcspClientVerificationService ocsp,
                               Duration timeout,

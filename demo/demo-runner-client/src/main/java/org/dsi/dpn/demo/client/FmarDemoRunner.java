@@ -5,6 +5,7 @@ package org.dsi.dpn.demo.client;
 import java.io.File;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import org.dsi.dpn.federator.rest.framework.client.rest.ProductKey;
 import org.dsi.dpn.federator.rest.framework.client.rest.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,10 +46,12 @@ public class FmarDemoRunner {
 
     private final DemoParameters params;
     private final RestClient restClient;
+    private final ProductKey productKey;
     private final ResultFormatter fmt = ResultFormatter.create();
 
     public FmarDemoRunner(DemoParameters params) {
         this.params = params;
+        this.productKey = new ProductKey(params.organisation(), params.productName());
         // RestClient bootstraps from the Management Node at construction and
         // validates the product exists before any call is made.
         this.restClient = createRestClient();
@@ -57,6 +60,7 @@ public class FmarDemoRunner {
     /** Visible for testing — lets a pre-built RestClient be injected. */
     FmarDemoRunner(DemoParameters params, RestClient restClient) {
         this.params = params;
+        this.productKey = new ProductKey(params.organisation(), params.productName());
         this.restClient = restClient;
     }
 
@@ -89,7 +93,7 @@ public class FmarDemoRunner {
     private void step1LookupBeforeRegistration(String path) {
         log.info(fmt.step(1, "Query asset before registration (expect not found)"));
         try {
-            String body = restClient.get(params.productName(), path, senderHeaders(true));
+            String body = restClient.get(productKey, path, senderHeaders(true));
             log.info(fmt.success("GET", path, body));
         } catch (Exception e) {
             log.info(fmt.expected("GET", path, "NOT FOUND", rootMessage(e)));
@@ -100,7 +104,7 @@ public class FmarDemoRunner {
         log.info(fmt.step(2, "Register the asset"));
         try {
             String body = restClient.post(
-                    params.productName(), path, registrationPayload(), senderHeaders(false));
+                    productKey, path, registrationPayload(), senderHeaders(false));
             log.info(fmt.success("POST", path, body));
         } catch (Exception e) {
             log.error(fmt.failure("POST", path, rootMessage(e)));
@@ -110,7 +114,7 @@ public class FmarDemoRunner {
     private void step3LookupAfterRegistration(String path) {
         log.info(fmt.step(3, "Query asset after registration (expect found)"));
         try {
-            String body = restClient.get(params.productName(), path, senderHeaders(true));
+            String body = restClient.get(productKey, path, senderHeaders(true));
             log.info(fmt.success("GET", path, body));
         } catch (Exception e) {
             log.error(fmt.failure("GET", path, rootMessage(e)));
@@ -121,7 +125,7 @@ public class FmarDemoRunner {
         log.info(fmt.step(4, "Register the same MPAN again (expect conflict)"));
         try {
             String body = restClient.post(
-                    params.productName(), path, registrationPayload(), senderHeaders(false));
+                    productKey, path, registrationPayload(), senderHeaders(false));
             log.warn(fmt.failure("POST", path,
                     "Expected a 409 conflict but the request succeeded: " + body));
         } catch (Exception e) {
@@ -131,18 +135,17 @@ public class FmarDemoRunner {
 
     /**
      * Deliberately calls a path that is NOT in the DSM product's allowed-path
-     * configuration, via {@link RestClient#getUnchecked} — which skips this
-     * client's own local pre-check so the request actually reaches the gateway.
+     * configuration. The rest-federator-client does not itself police paths — it
+     * just makes the call — so the request reaches the gateway, where
      * {@code DsiProductAuthorizationFilter}'s Stage 3 (method+path authorisation)
-     * rejects it there, so both this client's log AND the gateway's log show the
-     * failure — demonstrating the server-side enforcement actually works, not
-     * just the client's defensive local copy of the same rule.
+     * rejects it. Both this client's log AND the gateway's log show the failure,
+     * demonstrating that server-side enforcement is what actually protects the API.
      */
     private void step5ForbiddenPath() {
         String path = ASSETS_PATH + "/getClientID";
         log.info(fmt.step(5, "Call a path not in the allowed-path configuration (expect rejection)"));
         try {
-            String body = restClient.getUnchecked(params.productName(), path, senderHeaders(true));
+            String body = restClient.get(productKey, path, senderHeaders(true));
             log.warn(fmt.failure("GET", path,
                     "Expected the gateway to reject this path but the request succeeded: " + body));
         } catch (Exception e) {
