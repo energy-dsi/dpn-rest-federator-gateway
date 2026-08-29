@@ -160,13 +160,15 @@ public class PropertyUtil {
             LOGGER.error("Invalid Vault authentication configuration", e);
             // Startup runs before logback's appenders are fully started, so the ERROR above
             // can be silently dropped; mirror it to stdout, which is available immediately.
-            System.out.println("[VaultDiag] Invalid Vault authentication configuration: " + e);
-            e.printStackTrace(System.out);
+            System.out.println("[Vault] Invalid Vault authentication configuration: " + e);
             return new NoopSecretProvider();
         }
 
         if (authConfig == null) {
-            System.out.println("[VaultDiag] authConfig is null (blank role_id/secret_id?) — returning NoopSecretProvider");
+            // Vault URI is set but no usable credentials were found (e.g. token auth with no
+            // token, or approle with a blank role_id/secret_id — buildAppRoleAuthConfig already
+            // logs a WARN there). Treat as "Vault not configured in this context" and degrade
+            // to a no-op provider rather than failing.
             return new NoopSecretProvider();
         }
 
@@ -179,24 +181,35 @@ public class PropertyUtil {
 
         String cacheKey = buildCacheKey(vaultUri, authConfig, vaultTruststorePath);
 
+        // Only a successfully-built provider is ever cached. A construction/auth failure is
+        // deliberately NOT cached as a NoopSecretProvider: doing so would pin the whole JVM to
+        // no-op for its entire lifetime after a single transient Vault outage or a since-fixed
+        // credential, and would later surface as a misleading "Vault did not return <secret>"
+        // rather than the real authentication error. Letting it propagate makes the actual cause
+        // (e.g. "invalid role or secret ID") visible, and lets the next attempt — a pod restart
+        // or the SSL-bundle reload task — recover once Vault is healthy again.
         return SECRET_PROVIDER_CACHE.computeIfAbsent(cacheKey, key -> {
             try {
                 return new VaultSecretProvider(vaultUri, authConfig, vaultTruststorePath, vaultTruststorePassword);
             } catch (Exception e) {
                 LOGGER.error("Failed to create Vault secret provider for auth method {}", authMethod, e);
                 // Startup runs before logback's appenders are fully started, so the ERROR above
-                // can be silently dropped; mirror it to stdout, which is available immediately.
-                System.out.println("[VaultDiag] Failed to create Vault secret provider for auth method "
-                        + authMethod + ": " + e);
-                Throwable cause = e;
-                while (cause != null) {
-                    System.out.println("[VaultDiag]   caused by: " + cause);
-                    cause = cause.getCause();
-                }
-                e.printStackTrace(System.out);
-                return new NoopSecretProvider();
+                // can be silently dropped; mirror the root cause to stdout, which works immediately.
+                System.out.println("[Vault] Failed to authenticate/connect to Vault (auth method "
+                        + authMethod + "): " + rootCauseMessage(e));
+                throw new PropertyUtilException(
+                        "Failed to create Vault secret provider for auth method " + authMethod, e);
             }
         });
+    }
+
+    /** Returns the message of the deepest cause in the chain, for a concise one-line diagnostic. */
+    private static String rootCauseMessage(Throwable t) {
+        Throwable cause = t;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        return cause.getMessage() != null ? cause.getMessage() : cause.toString();
     }
 
     /**
