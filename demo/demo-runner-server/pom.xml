@@ -100,6 +100,16 @@
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
+                <configuration>
+                    <!-- Exclude Spring bootstrap/wiring (main class + @Configuration) from the
+                         coverage metric; these load PropertyUtil/Vault at startup and are
+                         exercised at deploy time, not by unit tests. Controllers, store,
+                         model and exception handling stay measured. -->
+                    <excludes>
+                        <exclude>**/DemoRunnerServerApplication.class</exclude>
+                        <exclude>**/config/DemoRunnerServerConfig.class</exclude>
+                    </excludes>
+                </configuration>
                 <executions>
                     <execution>
                         <goals><goal>prepare-agent</goal></goals>
