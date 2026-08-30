@@ -445,6 +445,17 @@ public class RestClient {
             return;
         }
 
+        // When vault.tls.enabled=true the TLS material comes from Vault (rotated in
+        // memory by VaultTlsSupport), so there is no keystore file/dir on disk to
+        // watch. Skip quietly rather than failing the watcher thread with a
+        // NoSuchFileException on a directory that will never exist.
+        Path parentDir = Paths.get(keystorePath).getParent();
+        if (parentDir == null || !java.nio.file.Files.isDirectory(parentDir)) {
+            log.info("RestClient: keystore directory '{}' not present (TLS likely sourced from "
+                    + "Vault) — file-based cert rotation watcher not started", parentDir);
+            return;
+        }
+
         Thread watchThread = new Thread(() -> {
             try {
                 Path p12Path = Paths.get(keystorePath);
