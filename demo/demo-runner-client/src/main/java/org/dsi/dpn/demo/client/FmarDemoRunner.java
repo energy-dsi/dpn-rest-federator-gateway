@@ -2,6 +2,9 @@
 // © Crown Copyright 2026. National Digital Twin Programme.
 package org.dsi.dpn.demo.client;
 
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import java.io.File;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -10,6 +13,7 @@ import org.dsi.dpn.federator.rest.framework.client.rest.RestClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.dsi.dpn.common.telemetry.HeartbeatService;
+import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 import org.dsi.dpn.common.utils.PropertyUtil;
 
 /**
@@ -37,6 +41,9 @@ import org.dsi.dpn.common.utils.PropertyUtil;
 public class FmarDemoRunner {
 
     private static final Logger log = LoggerFactory.getLogger(FmarDemoRunner.class);
+
+    private static final Tracer TRACER =
+            OpenTelemetryConfig.get().getTracer("org.dsi.dpn.demo.client");
 
     /** Component name for heartbeat / OTEL identity on the consumer side. */
     private static final String COMPONENT_NAME = "rest-federator-client";
@@ -69,29 +76,50 @@ public class FmarDemoRunner {
     }
 
     public void run() {
-        log.info(fmt.banner("DSI REST Federator — FMAR Demo Client"));
-        log.info(fmt.parameters(params));
+        // Root span for the whole run so every log line below shares one trace_id,
+        // and each step gets its own child span_id — the run is joinable end-to-end
+        // in the traces alongside the token, HTTP and OCSP spans the client emits.
+        Span root = TRACER.spanBuilder("FmarDemoRunner.run")
+                .setAttribute("dpn.organisation", params.organisation())
+                .setAttribute("dpn.product_name", params.productName())
+                .startSpan();
+        try (Scope scope = root.makeCurrent()) {
+            log.info(fmt.banner("DSI REST Federator — FMAR Demo Client"));
+            log.info(fmt.parameters(params));
 
-        restClient.getAllRegistrations().forEach((name, reg) ->
-                log.info("Available product: name={} producerId={} baseUrl={}",
-                        name, reg.producerId(), reg.baseUrl()));
+            restClient.getAllRegistrations().forEach((name, reg) ->
+                    log.info("Available product: name={} producerId={} baseUrl={}",
+                            name, reg.producerId(), reg.baseUrl()));
 
-        String queryPath = assetQueryPath();
-        String registerPath = registerPath();
+            String queryPath = assetQueryPath();
+            String registerPath = registerPath();
 
-        // Optional client-side fail-fast: a participant can check a call against the
-        // product's allowed paths (from consumer config) before making it, avoiding a
-        // round-trip for an obviously-disallowed call. Purely advisory — the gateway
-        // enforces the same rule authoritatively, which step 5 relies on.
-        logAllowedPathPreCheck(queryPath, registerPath);
+            // Optional client-side fail-fast: a participant can check a call against the
+            // product's allowed paths (from consumer config) before making it, avoiding a
+            // round-trip for an obviously-disallowed call. Purely advisory — the gateway
+            // enforces the same rule authoritatively, which step 5 relies on.
+            logAllowedPathPreCheck(queryPath, registerPath);
 
-        step1LookupBeforeRegistration(queryPath);
-        step2Register(registerPath);
-        step3LookupAfterRegistration(queryPath);
-        step4RegisterDuplicate(registerPath);
-        step5ForbiddenPath();
+            inSpan("step1.lookupBeforeRegistration", () -> step1LookupBeforeRegistration(queryPath));
+            inSpan("step2.register", () -> step2Register(registerPath));
+            inSpan("step3.lookupAfterRegistration", () -> step3LookupAfterRegistration(queryPath));
+            inSpan("step4.registerDuplicate", () -> step4RegisterDuplicate(registerPath));
+            inSpan("step5.forbiddenPath", this::step5ForbiddenPath);
 
-        log.info(fmt.banner("DEMO COMPLETE"));
+            log.info(fmt.banner("DEMO COMPLETE"));
+        } finally {
+            root.end();
+        }
+    }
+
+    /** Runs a demo step inside its own child span so each step is distinct in the trace. */
+    private void inSpan(String name, Runnable step) {
+        Span span = TRACER.spanBuilder(name).startSpan();
+        try (Scope scope = span.makeCurrent()) {
+            step.run();
+        } finally {
+            span.end();
+        }
     }
 
     /**
