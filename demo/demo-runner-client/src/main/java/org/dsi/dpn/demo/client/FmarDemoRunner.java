@@ -6,7 +6,10 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
 import java.io.File;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.dsi.dpn.federator.rest.framework.client.rest.ProductKey;
 import org.dsi.dpn.federator.rest.framework.client.rest.RestClient;
@@ -53,12 +56,10 @@ public class FmarDemoRunner {
 
     private final DemoParameters params;
     private final RestClient restClient;
-    private final ProductKey productKey;
     private final ResultFormatter fmt = ResultFormatter.create();
 
     public FmarDemoRunner(DemoParameters params) {
         this.params = params;
-        this.productKey = new ProductKey(params.organisation(), params.productName());
         // RestClient bootstraps from the Management Node at construction and
         // validates the product exists before any call is made.
         this.restClient = createRestClient();
@@ -67,7 +68,6 @@ public class FmarDemoRunner {
     /** Visible for testing — lets a pre-built RestClient be injected. */
     FmarDemoRunner(DemoParameters params, RestClient restClient) {
         this.params = params;
-        this.productKey = new ProductKey(params.organisation(), params.productName());
         this.restClient = restClient;
     }
 
@@ -76,9 +76,7 @@ public class FmarDemoRunner {
     }
 
     public void run() {
-        // Root span for the whole run so every log line below shares one trace_id,
-        // and each step gets its own child span_id — the run is joinable end-to-end
-        // in the traces alongside the token, HTTP and OCSP spans the client emits.
+        // Root span for the whole run so every log line below shares one trace_id.
         Span root = TRACER.spanBuilder("FmarDemoRunner.run")
                 .setAttribute("dpn.organisation", params.organisation())
                 .setAttribute("dpn.product_name", params.productName())
@@ -88,28 +86,89 @@ public class FmarDemoRunner {
             log.info(fmt.parameters(params));
 
             restClient.getAllRegistrations().forEach((name, reg) ->
-                    log.info("Available product: name={} producerId={} baseUrl={}",
+                    log.info("Available product: {} producerId={} baseUrl={}",
                             name, reg.producerId(), reg.baseUrl()));
 
-            String queryPath = assetQueryPath();
-            String registerPath = registerPath();
+            List<ProductKey> targets = resolveTargets();
+            if (targets.isEmpty()) {
+                log.warn("No target products resolved for organisation(s)='{}' productName(s)='{}'. "
+                                + "Nothing to run — check the subscriptions list above.",
+                        params.organisation(), params.productName());
+            } else {
+                log.info("Running the FMAR demo sequence against {} target(s): {}", targets.size(), targets);
+            }
 
-            // Optional client-side fail-fast: a participant can check a call against the
-            // product's allowed paths (from consumer config) before making it, avoiding a
-            // round-trip for an obviously-disallowed call. Purely advisory — the gateway
-            // enforces the same rule authoritatively, which step 5 relies on.
-            logAllowedPathPreCheck(queryPath, registerPath);
-
-            inSpan("step1.lookupBeforeRegistration", () -> step1LookupBeforeRegistration(queryPath));
-            inSpan("step2.register", () -> step2Register(registerPath));
-            inSpan("step3.lookupAfterRegistration", () -> step3LookupAfterRegistration(queryPath));
-            inSpan("step4.registerDuplicate", () -> step4RegisterDuplicate(registerPath));
-            inSpan("step5.forbiddenPath", this::step5ForbiddenPath);
+            int i = 1;
+            for (ProductKey key : targets) {
+                int idx = i++;
+                // One child span per target so each organisation/product is distinct in the trace.
+                inSpan("target[" + idx + "]." + key.organisation(), () -> runFor(key));
+            }
 
             log.info(fmt.banner("DEMO COMPLETE"));
         } finally {
             root.end();
         }
+    }
+
+    /**
+     * Resolves the (organisation, productName) targets to run against, from the ORGANISATION_NAME
+     * and PRODUCT_NAME inputs (each of which may be a comma-separated list):
+     * <ul>
+     *   <li>organisation(s) given + one product — run that product against each organisation;</li>
+     *   <li>organisation(s) given + a matching list of products — zipped pairwise;</li>
+     *   <li>organisation blank — run against every subscribed product (optionally filtered to the
+     *       named product name(s)), discovered from the client's consumer-config registry.</li>
+     * </ul>
+     */
+    List<ProductKey> resolveTargets() {
+        List<String> orgs = splitCsv(params.organisation());
+        List<String> products = splitCsv(params.productName());
+        List<ProductKey> targets = new ArrayList<>();
+        if (orgs.isEmpty()) {
+            // No organisation named → every subscribed product, optionally filtered by product name.
+            for (ProductKey k : restClient.getAllRegistrations().keySet()) {
+                if (products.isEmpty() || products.contains(k.productName())) {
+                    targets.add(k);
+                }
+            }
+        } else {
+            for (int i = 0; i < orgs.size(); i++) {
+                String product = products.isEmpty() ? ""
+                        : products.size() == 1 ? products.get(0)
+                        : products.get(Math.min(i, products.size() - 1));
+                if (!product.isBlank()) {
+                    targets.add(new ProductKey(orgs.get(i), product));
+                }
+            }
+        }
+        return targets;
+    }
+
+    private static List<String> splitCsv(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        return Arrays.stream(value.split(",")).map(String::trim).filter(s -> !s.isBlank()).toList();
+    }
+
+    /** Runs the full FMAR demo sequence against a single (organisation, productName) target. */
+    private void runFor(ProductKey key) {
+        log.info(fmt.banner("Target: organisation='" + key.organisation()
+                + "', productName='" + key.productName() + "'"));
+        String queryPath = assetQueryPath();
+        String registerPath = registerPath();
+
+        // Optional client-side fail-fast: a participant can check a call against the product's
+        // allowed paths (from consumer config) before making it. Purely advisory — the gateway
+        // enforces the same rule authoritatively, which step 5 relies on.
+        logAllowedPathPreCheck(key, queryPath, registerPath);
+
+        inSpan("step1.lookupBeforeRegistration", () -> step1LookupBeforeRegistration(key, queryPath));
+        inSpan("step2.register", () -> step2Register(key, registerPath));
+        inSpan("step3.lookupAfterRegistration", () -> step3LookupAfterRegistration(key, queryPath));
+        inSpan("step4.registerDuplicate", () -> step4RegisterDuplicate(key, registerPath));
+        inSpan("step5.forbiddenPath", () -> step5ForbiddenPath(key));
     }
 
     /** Runs a demo step inside its own child span so each step is distinct in the trace. */
@@ -128,10 +187,10 @@ public class FmarDemoRunner {
      * reports, for each path this run uses, whether it is permitted — the same check a
      * participant would run to fail fast instead of receiving a 403 from the gateway.
      */
-    private void logAllowedPathPreCheck(String queryPath, String registerPath) {
-        var registration = restClient.getRegistration(productKey);
+    private void logAllowedPathPreCheck(ProductKey key, String queryPath, String registerPath) {
+        var registration = restClient.getRegistration(key);
         if (registration.isEmpty()) {
-            log.warn("Client-side pre-check skipped — not subscribed to {}", productKey);
+            log.warn("Client-side pre-check skipped — not subscribed to {}", key);
             return;
         }
         var reg = registration.get();
@@ -149,42 +208,42 @@ public class FmarDemoRunner {
 
     // ── Steps ─────────────────────────────────────────────────────────────────
 
-    private void step1LookupBeforeRegistration(String path) {
+    private void step1LookupBeforeRegistration(ProductKey key, String path) {
         log.info(fmt.step(1, "Query asset before registration (expect not found)"));
         try {
-            String body = restClient.get(productKey, path, senderHeaders(true));
+            String body = restClient.get(key, path, senderHeaders(true));
             log.info(fmt.success("GET", path, body));
         } catch (Exception e) {
             log.info(fmt.expected("GET", path, "NOT FOUND", rootMessage(e)));
         }
     }
 
-    private void step2Register(String path) {
+    private void step2Register(ProductKey key, String path) {
         log.info(fmt.step(2, "Register the asset"));
         try {
             String body = restClient.post(
-                    productKey, path, registrationPayload(), senderHeaders(false));
+                    key, path, registrationPayload(), senderHeaders(false));
             log.info(fmt.success("POST", path, body));
         } catch (Exception e) {
             log.error(fmt.failure("POST", path, rootMessage(e)));
         }
     }
 
-    private void step3LookupAfterRegistration(String path) {
+    private void step3LookupAfterRegistration(ProductKey key, String path) {
         log.info(fmt.step(3, "Query asset after registration (expect found)"));
         try {
-            String body = restClient.get(productKey, path, senderHeaders(true));
+            String body = restClient.get(key, path, senderHeaders(true));
             log.info(fmt.success("GET", path, body));
         } catch (Exception e) {
             log.error(fmt.failure("GET", path, rootMessage(e)));
         }
     }
 
-    private void step4RegisterDuplicate(String path) {
+    private void step4RegisterDuplicate(ProductKey key, String path) {
         log.info(fmt.step(4, "Register the same MPAN again (expect conflict)"));
         try {
             String body = restClient.post(
-                    productKey, path, registrationPayload(), senderHeaders(false));
+                    key, path, registrationPayload(), senderHeaders(false));
             log.warn(fmt.failure("POST", path,
                     "Expected a 409 conflict but the request succeeded: " + body));
         } catch (Exception e) {
@@ -200,11 +259,11 @@ public class FmarDemoRunner {
      * rejects it. Both this client's log AND the gateway's log show the failure,
      * demonstrating that server-side enforcement is what actually protects the API.
      */
-    private void step5ForbiddenPath() {
+    private void step5ForbiddenPath(ProductKey key) {
         String path = ASSETS_PATH + "/getClientID";
         log.info(fmt.step(5, "Call a path not in the allowed-path configuration (expect rejection)"));
         try {
-            String body = restClient.get(productKey, path, senderHeaders(true));
+            String body = restClient.get(key, path, senderHeaders(true));
             log.warn(fmt.failure("GET", path,
                     "Expected the gateway to reject this path but the request succeeded: " + body));
         } catch (Exception e) {

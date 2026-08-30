@@ -41,12 +41,10 @@ public record DemoParameters(
      * @throws IllegalArgumentException if the product name is not supplied
      */
     public static DemoParameters resolve() {
+        // Both may be a single value or a comma-separated list. ORGANISATION_NAME may also be left
+        // blank to target every product this consumer is subscribed to (see FmarDemoRunner
+        // .resolveTargets); PRODUCT_NAME is still required to know which product(s) to exercise.
         String organisation = resolveValue("ORGANISATION_NAME", "federator.rest.organisation", "");
-        if (organisation.isBlank()) {
-            throw new IllegalArgumentException(
-                    "No organisation supplied. Set the ORGANISATION_NAME environment "
-                            + "variable or federator.rest.organisation in client.properties.");
-        }
         String productName = resolveValue("PRODUCT_NAME", "federator.rest.product.name", "");
         if (productName.isBlank()) {
             throw new IllegalArgumentException(
