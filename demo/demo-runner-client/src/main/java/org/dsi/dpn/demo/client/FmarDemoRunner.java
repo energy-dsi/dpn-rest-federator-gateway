@@ -6,8 +6,8 @@ import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.Tracer;
 import io.opentelemetry.context.Scope;
 import java.io.File;
-import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -112,37 +112,28 @@ public class FmarDemoRunner {
     }
 
     /**
-     * Resolves the (organisation, productName) targets to run against, from the ORGANISATION_NAME
-     * and PRODUCT_NAME inputs (each of which may be a comma-separated list):
+     * Resolves the (organisation, productName) targets to run against by filtering the client's
+     * subscription registry (built from getConsumerConfig) against the ORGANISATION_NAME and
+     * PRODUCT_NAME inputs, each of which may be a single value, a comma-separated list, or blank:
      * <ul>
-     *   <li>organisation(s) given + one product — run that product against each organisation;</li>
-     *   <li>organisation(s) given + a matching list of products — zipped pairwise;</li>
-     *   <li>organisation blank — run against every subscribed product (optionally filtered to the
-     *       named product name(s)), discovered from the client's consumer-config registry.</li>
+     *   <li>both blank — every product the consumer is subscribed to;</li>
+     *   <li>organisation(s) only — every product those organisation(s) offer (so a single org with
+     *       several products yields one target per product);</li>
+     *   <li>product(s) only — every organisation offering those product(s);</li>
+     *   <li>both — the intersection (named organisation(s) offering named product(s)).</li>
      * </ul>
+     * Because targets are drawn from the registry, only genuinely subscribed products are selected —
+     * a typo can't produce a "not subscribed" call.
      */
     List<ProductKey> resolveTargets() {
         List<String> orgs = splitCsv(params.organisation());
         List<String> products = splitCsv(params.productName());
-        List<ProductKey> targets = new ArrayList<>();
-        if (orgs.isEmpty()) {
-            // No organisation named → every subscribed product, optionally filtered by product name.
-            for (ProductKey k : restClient.getAllRegistrations().keySet()) {
-                if (products.isEmpty() || products.contains(k.productName())) {
-                    targets.add(k);
-                }
-            }
-        } else {
-            for (int i = 0; i < orgs.size(); i++) {
-                String product = products.isEmpty() ? ""
-                        : products.size() == 1 ? products.get(0)
-                        : products.get(Math.min(i, products.size() - 1));
-                if (!product.isBlank()) {
-                    targets.add(new ProductKey(orgs.get(i), product));
-                }
-            }
-        }
-        return targets;
+        return restClient.getAllRegistrations().keySet().stream()
+                .filter(k -> orgs.isEmpty() || orgs.contains(k.organisation()))
+                .filter(k -> products.isEmpty() || products.contains(k.productName()))
+                .sorted(Comparator.comparing(ProductKey::organisation)
+                        .thenComparing(ProductKey::productName))
+                .toList();
     }
 
     private static List<String> splitCsv(String value) {

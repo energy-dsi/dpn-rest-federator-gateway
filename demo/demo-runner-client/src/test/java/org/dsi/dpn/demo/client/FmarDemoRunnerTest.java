@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.dsi.dpn.demo.client;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.dsi.dpn.federator.rest.framework.client.rest.ProductKey;
@@ -44,7 +45,11 @@ class FmarDemoRunnerTest {
         params = new DemoParameters(
                 ORG, PRODUCT, MPAN, POSTCODE, null, fspId, "fsp-001", "FSP", true);
         runner = new FmarDemoRunner(params, restClient);
-        when(restClient.getAllRegistrations()).thenReturn(Map.of());
+        // Targets are resolved by filtering the client's subscription registry, so the
+        // registry must contain the product the demo is pointed at.
+        RestClient.ProductRegistration reg = new RestClient.ProductRegistration(
+                ORG, "producer-id", PRODUCT, "https://host:8443", List.of(), null);
+        when(restClient.getAllRegistrations()).thenReturn(Map.of(KEY, reg));
     }
 
     @Test @DisplayName("assetQueryPath() builds the spec's query parameters")
