@@ -37,20 +37,13 @@ public record DemoParameters(
     /**
      * Reads parameters from the environment, falling back to client.properties
      * and then to demo defaults.
-     *
-     * @throws IllegalArgumentException if the product name is not supplied
      */
     public static DemoParameters resolve() {
-        // Both may be a single value or a comma-separated list. ORGANISATION_NAME may also be left
-        // blank to target every product this consumer is subscribed to (see FmarDemoRunner
-        // .resolveTargets); PRODUCT_NAME is still required to know which product(s) to exercise.
+        // ORGANISATION_NAME and PRODUCT_NAME may each be a single value, a comma-separated list, or
+        // blank. They filter the client's subscription registry to the targets to run against
+        // (see FmarDemoRunner.resolveTargets) — blank/blank targets every subscribed product.
         String organisation = resolveValue("ORGANISATION_NAME", "federator.rest.organisation", "");
         String productName = resolveValue("PRODUCT_NAME", "federator.rest.product.name", "");
-        if (productName.isBlank()) {
-            throw new IllegalArgumentException(
-                    "No data product name supplied. Set the PRODUCT_NAME environment "
-                            + "variable or federator.rest.product.name in client.properties.");
-        }
 
         return new DemoParameters(
                 organisation,
