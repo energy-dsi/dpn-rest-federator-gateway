@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Function;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -196,8 +197,7 @@ public class RestClient {
      * @throws IllegalArgumentException if no product is registered for {@code key}
      */
     public String get(ProductKey key, String path, Map<String, String> extraHeaders) {
-        ProductRegistration reg = resolve(key);
-        return doBodyless("GET", reg.webClient().get(), reg, key, path, extraHeaders);
+        return doBodyless("GET", WebClient::get, key, path, extraHeaders);
     }
 
     /**
@@ -214,20 +214,25 @@ public class RestClient {
 
     /** DELETE with additional request headers. See {@link #get(ProductKey, String, Map)}. */
     public String delete(ProductKey key, String path, Map<String, String> extraHeaders) {
-        ProductRegistration reg = resolve(key);
-        return doBodyless("DELETE", reg.webClient().delete(), reg, key, path, extraHeaders);
+        return doBodyless("DELETE", WebClient::delete, key, path, extraHeaders);
     }
 
-    /** Shared implementation for the body-less verbs (GET, DELETE). */
+    /**
+     * Shared implementation for the body-less verbs (GET, DELETE). The span is created and made
+     * current first, so product resolution (incl. the OCSP check) and every log line below share
+     * one trace_id. {@code verb} selects the WebClient method (e.g. {@code WebClient::get}).
+     */
     private String doBodyless(String method,
-                              WebClient.RequestHeadersUriSpec<?> verbSpec,
-                              ProductRegistration reg, ProductKey key, String path,
+                              Function<WebClient, WebClient.RequestHeadersUriSpec<?>> verb,
+                              ProductKey key, String path,
                               Map<String, String> extraHeaders) {
-        String url = reg.baseUrl() + path;
-        Span span = startSpan(method, key, reg, path);
-        log.info("{} {}", method, url);
+        Span span = startSpan(method, key, path);
         try (Scope scope = span.makeCurrent()) {
-            var spec = verbSpec
+            ProductRegistration reg = resolve(key);
+            span.setAttribute("dpn.producer_id", reg.producerId());
+            String url = reg.baseUrl() + path;
+            log.info("{} {}", method, url);
+            var spec = verb.apply(reg.webClient())
                     .uri(url)
                     .header(HttpHeaders.AUTHORIZATION, BEARER + idpTokenService.fetchToken());
             applyExtraHeaders(spec, extraHeaders);
@@ -247,7 +252,7 @@ public class RestClient {
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new RuntimeException(method + " failed: HTTP " + e.getStatusCode()
-                    + " url=" + url, e);
+                    + " for " + key + " path=" + path, e);
         } finally {
             span.end();
         }
@@ -280,8 +285,7 @@ public class RestClient {
      */
     public String post(ProductKey key, String path, String jsonPayload,
                        Map<String, String> extraHeaders) {
-        ProductRegistration reg = resolve(key);
-        return doBody("POST", reg.webClient().post(), reg, key, path, jsonPayload, extraHeaders);
+        return doBody("POST", WebClient::post, key, path, jsonPayload, extraHeaders);
     }
 
     /** Makes a PUT call to the specified product and path. See {@link #post(ProductKey, String, String)}. */
@@ -292,8 +296,7 @@ public class RestClient {
     /** PUT with additional request headers. See {@link #post(ProductKey, String, String, Map)}. */
     public String put(ProductKey key, String path, String jsonPayload,
                       Map<String, String> extraHeaders) {
-        ProductRegistration reg = resolve(key);
-        return doBody("PUT", reg.webClient().put(), reg, key, path, jsonPayload, extraHeaders);
+        return doBody("PUT", WebClient::put, key, path, jsonPayload, extraHeaders);
     }
 
     /** Makes a PATCH call to the specified product and path. See {@link #post(ProductKey, String, String)}. */
@@ -304,20 +307,25 @@ public class RestClient {
     /** PATCH with additional request headers. See {@link #post(ProductKey, String, String, Map)}. */
     public String patch(ProductKey key, String path, String jsonPayload,
                         Map<String, String> extraHeaders) {
-        ProductRegistration reg = resolve(key);
-        return doBody("PATCH", reg.webClient().patch(), reg, key, path, jsonPayload, extraHeaders);
+        return doBody("PATCH", WebClient::patch, key, path, jsonPayload, extraHeaders);
     }
 
-    /** Shared implementation for the body-carrying verbs (POST, PUT, PATCH). */
+    /**
+     * Shared implementation for the body-carrying verbs (POST, PUT, PATCH). The span is created and
+     * made current first, so product resolution (incl. the OCSP check) and every log line below
+     * share one trace_id. {@code verb} selects the WebClient method (e.g. {@code WebClient::post}).
+     */
     private String doBody(String method,
-                          WebClient.RequestBodyUriSpec verbSpec,
-                          ProductRegistration reg, ProductKey key, String path,
+                          Function<WebClient, WebClient.RequestBodyUriSpec> verb,
+                          ProductKey key, String path,
                           String jsonPayload, Map<String, String> extraHeaders) {
-        String url = reg.baseUrl() + path;
-        Span span = startSpan(method, key, reg, path);
-        log.info("{} {}", method, url);
+        Span span = startSpan(method, key, path);
         try (Scope scope = span.makeCurrent()) {
-            var bodySpec = verbSpec
+            ProductRegistration reg = resolve(key);
+            span.setAttribute("dpn.producer_id", reg.producerId());
+            String url = reg.baseUrl() + path;
+            log.info("{} {}", method, url);
+            var bodySpec = verb.apply(reg.webClient())
                     .uri(url)
                     .header(HttpHeaders.AUTHORIZATION, BEARER + idpTokenService.fetchToken());
             applyExtraHeaders(bodySpec, extraHeaders);
@@ -339,21 +347,20 @@ public class RestClient {
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new RuntimeException(method + " failed: HTTP " + e.getStatusCode()
-                    + " url=" + url, e);
+                    + " for " + key + " path=" + path, e);
         } finally {
             span.end();
         }
     }
 
     /** Builds the CLIENT span for an outbound call, tagged with the product identity. */
-    private Span startSpan(String method, ProductKey key, ProductRegistration reg, String path) {
+    private Span startSpan(String method, ProductKey key, String path) {
         return TRACER.spanBuilder("RestClient." + method.toLowerCase(java.util.Locale.ROOT))
                 .setSpanKind(SpanKind.CLIENT)
                 .setAttribute("http.method", method)
                 .setAttribute("url.path", path)
                 .setAttribute("dpn.organisation", key.organisation())
                 .setAttribute("dpn.product_name", key.productName())
-                .setAttribute("dpn.producer_id", reg.producerId())
                 .startSpan();
     }
 
@@ -376,8 +383,10 @@ public class RestClient {
     // ── Bootstrap — call Management Node at construction ─────────────────────
 
     protected void bootstrap() {
-        log.info("RestClient bootstrapping — fetching consumer config from Management Node");
-        try {
+        // Span the bootstrap so the consumer-config fetch and registration logs carry a trace_id.
+        Span span = TRACER.spanBuilder("RestClient.bootstrap").setSpanKind(SpanKind.CLIENT).startSpan();
+        try (Scope scope = span.makeCurrent()) {
+            log.info("RestClient bootstrapping — fetching consumer config from Management Node");
             ManagementNodeDataHandler handler = new ManagementNodeDataHandler(
                     () -> HttpClientFactoryUtils.createHttpClientWithMtls(commonProps),
                     ObjectMapperUtil.getInstance(),
@@ -386,9 +395,13 @@ public class RestClient {
                     handler, InMemoryConfigurationStore.getInstance());
             processConfig(configService.getConsumerConfiguration());
         } catch (Exception e) {
+            span.recordException(e);
+            span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new IllegalStateException(
                     "RestClient bootstrap failed — could not fetch consumer config: "
                             + e.getMessage(), e);
+        } finally {
+            span.end();
         }
     }
 
