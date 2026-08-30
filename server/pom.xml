@@ -142,6 +142,25 @@
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
                 <version>0.8.11</version>
+                <configuration>
+                    <!-- Exclude Spring @Configuration / bootstrap wiring from the coverage
+                         metric. These classes are framework glue (bean definitions, the
+                         security filter chain, the JWKS/JwtDecoder wiring, the env post-
+                         processor and the main class); they load PropertyUtil/Vault/Keycloak
+                         at startup and are exercised at deploy time, not by unit tests.
+                         Business logic (proxy, security filter, OCSP, AllowedPath, exception
+                         handling, KeycloakJwtConverter, SecurityHeadersFilter) stays measured. -->
+                    <excludes>
+                        <exclude>**/RestFederatorServerApplication.class</exclude>
+                        <exclude>**/framework/server/config/SecurityConfig.class</exclude>
+                        <exclude>**/framework/server/config/JwtDecoderConfig.class</exclude>
+                        <exclude>**/framework/server/config/JwtDecoderConfig$*.class</exclude>
+                        <exclude>**/framework/server/config/RestFederatorServerConfig.class</exclude>
+                        <exclude>**/framework/server/config/RestFederatorServerConfig$*.class</exclude>
+                        <exclude>**/framework/server/config/FederatorCommonConfigEnvironmentPostProcessor.class</exclude>
+                        <exclude>**/framework/server/config/JwksController.class</exclude>
+                    </excludes>
+                </configuration>
                 <executions>
                     <execution>
                         <goals><goal>prepare-agent</goal></goals>
