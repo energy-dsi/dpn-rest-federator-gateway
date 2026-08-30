@@ -434,6 +434,42 @@ public class RestClient {
                         key, baseUrl, product.getTopic());
             }
         }
+        logSubscriptions();
+    }
+
+    /**
+     * Logs the full set of REST products this consumer is subscribed to — the
+     * (organisation, productName) pairs a caller must use as a {@link ProductKey}.
+     * Printed once after bootstrap so the available set is obvious in the logs.
+     */
+    private void logSubscriptions() {
+        if (registry.isEmpty()) {
+            log.warn("RestClient: no REST products subscribed — getConsumerConfig returned no "
+                    + "products of type 'rest'. No calls will resolve until a subscription exists.");
+            return;
+        }
+        log.info("RestClient subscriptions ({}) — call these via new ProductKey(organisation, productName):",
+                registry.size());
+        int i = 1;
+        for (ProductKey k : registry.keySet()) {
+            log.info("  [{}] organisation='{}', productName='{}'", i++, k.organisation(), k.productName());
+        }
+    }
+
+    /** Human-readable list of the subscribed (organisation, productName) pairs, for error messages. */
+    private String subscriptionsSummary() {
+        if (registry.isEmpty()) {
+            return "(none — this consumer has no REST subscriptions)";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (ProductKey k : registry.keySet()) {
+            if (sb.length() > 0) {
+                sb.append("; ");
+            }
+            sb.append("organisation='").append(k.organisation())
+              .append("', productName='").append(k.productName()).append('\'');
+        }
+        return sb.toString();
     }
 
     // ── Certificate file watcher ──────────────────────────────────────────────
@@ -530,9 +566,14 @@ public class RestClient {
     protected ProductRegistration resolve(ProductKey key) {
         ProductRegistration reg = registry.get(key);
         if (reg == null) {
+            log.warn("Product mismatch — requested organisation='{}', productName='{}', but this "
+                            + "consumer is not subscribed to it. Subscribed products ({}): {}. "
+                            + "Check the organisation/product name against the subscriptions list "
+                            + "logged at startup (they must match getConsumerConfig exactly).",
+                    key.organisation(), key.productName(), registry.size(), subscriptionsSummary());
             throw new IllegalArgumentException(
                     "No REST product registered for " + key
-                            + ". Available products: " + registry.keySet()
+                            + ". Subscribed products: " + subscriptionsSummary()
                             + ". Has RestClient bootstrapped correctly, and are you subscribed "
                             + "to this organisation's product?");
         }
