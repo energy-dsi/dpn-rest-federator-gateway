@@ -196,42 +196,57 @@ public class RestClient {
      * @throws IllegalArgumentException if no product is registered for {@code key}
      */
     public String get(ProductKey key, String path, Map<String, String> extraHeaders) {
-        return doGet(resolve(key), key, path, extraHeaders);
+        ProductRegistration reg = resolve(key);
+        return doBodyless("GET", reg.webClient().get(), reg, key, path, extraHeaders);
     }
 
-    private String doGet(ProductRegistration reg, ProductKey key, String path,
-                         Map<String, String> extraHeaders) {
+    /**
+     * Makes a DELETE call to the specified product and path.
+     *
+     * @param key   the product's composite identity (organisation, productName)
+     * @param path  API path
+     * @return response body as String
+     * @throws IllegalArgumentException if no product is registered for {@code key}
+     */
+    public String delete(ProductKey key, String path) {
+        return delete(key, path, null);
+    }
+
+    /** DELETE with additional request headers. See {@link #get(ProductKey, String, Map)}. */
+    public String delete(ProductKey key, String path, Map<String, String> extraHeaders) {
+        ProductRegistration reg = resolve(key);
+        return doBodyless("DELETE", reg.webClient().delete(), reg, key, path, extraHeaders);
+    }
+
+    /** Shared implementation for the body-less verbs (GET, DELETE). */
+    private String doBodyless(String method,
+                              WebClient.RequestHeadersUriSpec<?> verbSpec,
+                              ProductRegistration reg, ProductKey key, String path,
+                              Map<String, String> extraHeaders) {
         String url = reg.baseUrl() + path;
-        Span span = TRACER.spanBuilder("RestClient.get")
-                .setSpanKind(SpanKind.CLIENT)
-                .setAttribute("http.method", "GET")
-                .setAttribute("url.path", path)
-                .setAttribute("dpn.organisation", key.organisation())
-                .setAttribute("dpn.product_name", key.productName())
-                .setAttribute("dpn.producer_id", reg.producerId())
-                .startSpan();
-        log.info("GET {}", url);
+        Span span = startSpan(method, key, reg, path);
+        log.info("{} {}", method, url);
         try (Scope scope = span.makeCurrent()) {
-            var spec = reg.webClient().get()
+            var spec = verbSpec
                     .uri(url)
                     .header(HttpHeaders.AUTHORIZATION, BEARER + idpTokenService.fetchToken());
             applyExtraHeaders(spec, extraHeaders);
             Object resp = spec
                     .retrieve()
                     .onStatus((HttpStatusCode s) -> s == HttpStatus.UNAUTHORIZED, r -> {
-                        log.warn("401 on GET {} — token may have expired", url);
+                        log.warn("401 on {} {} — token may have expired", method, url);
                         return r.createException();
                     })
                     .bodyToMono(Object.class)
                     .timeout(timeout)
                     .block();
             String result = resp != null ? resp.toString() : null;
-            log.info("GET {} → {}", url, result);
+            log.info("{} {} → {}", method, url, result);
             return result;
         } catch (WebClientResponseException e) {
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
-            throw new RuntimeException("GET failed: HTTP " + e.getStatusCode()
+            throw new RuntimeException(method + " failed: HTTP " + e.getStatusCode()
                     + " url=" + url, e);
         } finally {
             span.end();
@@ -241,7 +256,7 @@ public class RestClient {
     /**
      * Makes a POST call to the specified product and path.
      *
-     * @param key          the product's composite identity (organisation, productName, producerId)
+     * @param key          the product's composite identity (organisation, productName)
      * @param path         API path e.g. /api/v1/fmar/fsp/{fspId}/assets
      * @param jsonPayload  Request body as JSON string
      * @return response body as String
@@ -254,7 +269,7 @@ public class RestClient {
     /**
      * Makes a POST call to the specified product and path, with additional request headers.
      *
-     * @param key          the product's composite identity (organisation, productName, producerId)
+     * @param key          the product's composite identity (organisation, productName)
      * @param path         API path (including any query string)
      * @param jsonPayload  Request body as JSON string
      * @param extraHeaders Additional headers to send (e.g. domain-specific sender headers).
@@ -266,18 +281,43 @@ public class RestClient {
     public String post(ProductKey key, String path, String jsonPayload,
                        Map<String, String> extraHeaders) {
         ProductRegistration reg = resolve(key);
+        return doBody("POST", reg.webClient().post(), reg, key, path, jsonPayload, extraHeaders);
+    }
+
+    /** Makes a PUT call to the specified product and path. See {@link #post(ProductKey, String, String)}. */
+    public String put(ProductKey key, String path, String jsonPayload) {
+        return put(key, path, jsonPayload, null);
+    }
+
+    /** PUT with additional request headers. See {@link #post(ProductKey, String, String, Map)}. */
+    public String put(ProductKey key, String path, String jsonPayload,
+                      Map<String, String> extraHeaders) {
+        ProductRegistration reg = resolve(key);
+        return doBody("PUT", reg.webClient().put(), reg, key, path, jsonPayload, extraHeaders);
+    }
+
+    /** Makes a PATCH call to the specified product and path. See {@link #post(ProductKey, String, String)}. */
+    public String patch(ProductKey key, String path, String jsonPayload) {
+        return patch(key, path, jsonPayload, null);
+    }
+
+    /** PATCH with additional request headers. See {@link #post(ProductKey, String, String, Map)}. */
+    public String patch(ProductKey key, String path, String jsonPayload,
+                        Map<String, String> extraHeaders) {
+        ProductRegistration reg = resolve(key);
+        return doBody("PATCH", reg.webClient().patch(), reg, key, path, jsonPayload, extraHeaders);
+    }
+
+    /** Shared implementation for the body-carrying verbs (POST, PUT, PATCH). */
+    private String doBody(String method,
+                          WebClient.RequestBodyUriSpec verbSpec,
+                          ProductRegistration reg, ProductKey key, String path,
+                          String jsonPayload, Map<String, String> extraHeaders) {
         String url = reg.baseUrl() + path;
-        Span span = TRACER.spanBuilder("RestClient.post")
-                .setSpanKind(SpanKind.CLIENT)
-                .setAttribute("http.method", "POST")
-                .setAttribute("url.path", path)
-                .setAttribute("dpn.organisation", key.organisation())
-                .setAttribute("dpn.product_name", key.productName())
-                .setAttribute("dpn.producer_id", reg.producerId())
-                .startSpan();
-        log.info("POST {}", url);
+        Span span = startSpan(method, key, reg, path);
+        log.info("{} {}", method, url);
         try (Scope scope = span.makeCurrent()) {
-            var bodySpec = reg.webClient().post()
+            var bodySpec = verbSpec
                     .uri(url)
                     .header(HttpHeaders.AUTHORIZATION, BEARER + idpTokenService.fetchToken());
             applyExtraHeaders(bodySpec, extraHeaders);
@@ -286,23 +326,35 @@ public class RestClient {
                     .bodyValue(jsonPayload != null ? jsonPayload : "{}")
                     .retrieve()
                     .onStatus((HttpStatusCode s) -> s == HttpStatus.UNAUTHORIZED, r -> {
-                        log.warn("401 on POST {} — token may have expired", url);
+                        log.warn("401 on {} {} — token may have expired", method, url);
                         return r.createException();
                     })
                     .bodyToMono(Object.class)
                     .timeout(timeout)
                     .block();
             String result = resp != null ? resp.toString() : null;
-            log.info("POST {} → {}", url, result);
+            log.info("{} {} → {}", method, url, result);
             return result;
         } catch (WebClientResponseException e) {
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
-            throw new RuntimeException("POST failed: HTTP " + e.getStatusCode()
+            throw new RuntimeException(method + " failed: HTTP " + e.getStatusCode()
                     + " url=" + url, e);
         } finally {
             span.end();
         }
+    }
+
+    /** Builds the CLIENT span for an outbound call, tagged with the product identity. */
+    private Span startSpan(String method, ProductKey key, ProductRegistration reg, String path) {
+        return TRACER.spanBuilder("RestClient." + method.toLowerCase(java.util.Locale.ROOT))
+                .setSpanKind(SpanKind.CLIENT)
+                .setAttribute("http.method", method)
+                .setAttribute("url.path", path)
+                .setAttribute("dpn.organisation", key.organisation())
+                .setAttribute("dpn.product_name", key.productName())
+                .setAttribute("dpn.producer_id", reg.producerId())
+                .startSpan();
     }
 
     /**

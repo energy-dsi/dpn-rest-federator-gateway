@@ -78,12 +78,17 @@ class RestClientTest {
         when(responseSpec.onStatus(any(), any())).thenReturn(responseSpec);
         when(responseSpec.bodyToMono(Object.class)).thenReturn(Mono.just("mock-response"));
 
-        // Wire POST chain
+        // Wire POST chain (PUT/PATCH reuse the same body-spec chain)
         when(webClient.post()).thenReturn(postSpec);
+        when(webClient.put()).thenReturn(postSpec);
+        when(webClient.patch()).thenReturn(postSpec);
         when(postSpec.uri(anyString())).thenReturn(bodySpec);
         when(bodySpec.header(anyString(), anyString())).thenReturn(bodySpec);
         when(bodySpec.contentType(any())).thenReturn(bodySpec);
         when(bodySpec.bodyValue(any())).thenReturn(headersSpec);
+
+        // DELETE reuses the body-less (GET) chain
+        when(webClient.delete()).thenReturn(getSpec);
     }
 
     // ── getRegistration / getAllRegistrations ─────────────────────────────────
@@ -180,6 +185,44 @@ class RestClientTest {
         String result = client.post(KEY, ALLOWED_PATH, "{\"importMpans\":[\"1000000000001\"]}");
         assertThat(result).isEqualTo("created");
         verify(idpTokenService).fetchToken();
+    }
+
+    @Test @DisplayName("put() sends a body and returns the response")
+    void put_success() {
+        when(responseSpec.bodyToMono(Object.class)).thenReturn(Mono.just("replaced"));
+        String result = client.put(KEY, ALLOWED_PATH, "{\"x\":1}");
+        assertThat(result).isEqualTo("replaced");
+        verify(webClient).put();
+        verify(idpTokenService).fetchToken();
+        verify(ocspService).verify(PRODUCER_ID);
+    }
+
+    @Test @DisplayName("patch() sends a body and returns the response")
+    void patch_success() {
+        when(responseSpec.bodyToMono(Object.class)).thenReturn(Mono.just("patched"));
+        String result = client.patch(KEY, ALLOWED_PATH, "{\"x\":1}");
+        assertThat(result).isEqualTo("patched");
+        verify(webClient).patch();
+    }
+
+    @Test @DisplayName("delete() sends no body and returns the response")
+    void delete_success() {
+        when(responseSpec.bodyToMono(Object.class)).thenReturn(Mono.just("deleted"));
+        String result = client.delete(KEY, ALLOWED_PATH);
+        assertThat(result).isEqualTo("deleted");
+        verify(webClient).delete();
+        verify(ocspService).verify(PRODUCER_ID);
+    }
+
+    @Test @DisplayName("put()/patch()/delete() also require a subscribed product")
+    void bodyVerbs_unknownProduct() {
+        ProductKey unknown = new ProductKey(ORG, "unknown-product");
+        assertThatThrownBy(() -> client.put(unknown, ALLOWED_PATH, "{}"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("No REST product registered for");
+        assertThatThrownBy(() -> client.delete(unknown, ALLOWED_PATH))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("No REST product registered for");
     }
 
     @Test @DisplayName("post() uses empty JSON when payload is null")
