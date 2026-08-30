@@ -606,5 +606,28 @@ public class RestClient {
             String            productName,
             String            baseUrl,
             List<AllowedPath> allowedPaths,
-            WebClient         webClient) {}
+            WebClient         webClient) {
+
+        /**
+         * Optional client-side pre-check: does this product's allowed-path configuration permit
+         * {@code method} on {@code path}? Lets an integrator fail fast, before a round-trip, instead
+         * of receiving a 403 from the gateway. Purely advisory — the gateway enforces the same rule
+         * authoritatively regardless. Any query string on {@code path} is ignored (paths are matched
+         * on the path only), using the same {@link org.springframework.util.AntPathMatcher} semantics
+         * (URI templates like {@code {id}} and Ant wildcards {@code *}/{@code **}) the gateway uses.
+         *
+         * @param method HTTP method, e.g. {@code "GET"}
+         * @param path   request path, with or without a query string
+         * @return {@code true} if some allowed-path entry matches
+         */
+        public boolean isAllowed(String method, String path) {
+            if (path == null) {
+                return false;
+            }
+            int q = path.indexOf('?');
+            String pathOnly = q >= 0 ? path.substring(0, q) : path;
+            org.springframework.util.AntPathMatcher matcher = new org.springframework.util.AntPathMatcher();
+            return allowedPaths.stream().anyMatch(entry -> entry.matches(matcher, method, pathOnly));
+        }
+    }
 }

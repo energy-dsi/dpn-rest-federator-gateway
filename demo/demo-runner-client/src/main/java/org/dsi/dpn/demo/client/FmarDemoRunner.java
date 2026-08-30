@@ -79,6 +79,12 @@ public class FmarDemoRunner {
         String queryPath = assetQueryPath();
         String registerPath = registerPath();
 
+        // Optional client-side fail-fast: a participant can check a call against the
+        // product's allowed paths (from consumer config) before making it, avoiding a
+        // round-trip for an obviously-disallowed call. Purely advisory — the gateway
+        // enforces the same rule authoritatively, which step 5 relies on.
+        logAllowedPathPreCheck(queryPath, registerPath);
+
         step1LookupBeforeRegistration(queryPath);
         step2Register(registerPath);
         step3LookupAfterRegistration(queryPath);
@@ -86,6 +92,31 @@ public class FmarDemoRunner {
         step5ForbiddenPath();
 
         log.info(fmt.banner("DEMO COMPLETE"));
+    }
+
+    /**
+     * Demonstrates the optional client-side allowed-path pre-check. Reads the product's
+     * allowed paths from the registry the client bootstrapped from consumer config and
+     * reports, for each path this run uses, whether it is permitted — the same check a
+     * participant would run to fail fast instead of receiving a 403 from the gateway.
+     */
+    private void logAllowedPathPreCheck(String queryPath, String registerPath) {
+        var registration = restClient.getRegistration(productKey);
+        if (registration.isEmpty()) {
+            log.warn("Client-side pre-check skipped — not subscribed to {}", productKey);
+            return;
+        }
+        var reg = registration.get();
+        String forbiddenPath = ASSETS_PATH + "/getClientID";
+        log.info("Client-side allowed-path pre-check (advisory; gateway enforces regardless):");
+        log.info("  allowed paths from consumer config: {}", reg.allowedPaths());
+        log.info("  GET  {} -> {}", ASSETS_PATH,
+                reg.isAllowed("GET", queryPath) ? "ALLOWED" : "NOT ALLOWED");
+        log.info("  POST {} -> {}", registerPath,
+                reg.isAllowed("POST", registerPath) ? "ALLOWED" : "NOT ALLOWED");
+        log.info("  GET  {} -> {}", forbiddenPath,
+                reg.isAllowed("GET", forbiddenPath)
+                        ? "ALLOWED" : "NOT ALLOWED (a participant could stop here; step 5 calls anyway to show the gateway also rejects it)");
     }
 
     // ── Steps ─────────────────────────────────────────────────────────────────

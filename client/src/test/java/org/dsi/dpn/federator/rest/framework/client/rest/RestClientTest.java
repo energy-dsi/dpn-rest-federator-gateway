@@ -113,6 +113,19 @@ class RestClientTest {
         assertThat(all).containsKey(KEY);
     }
 
+    @Test @DisplayName("ProductRegistration.isAllowed() checks method+path against allowed paths")
+    void productRegistration_isAllowed() {
+        RestClient.ProductRegistration reg = client.getRegistration(KEY).orElseThrow();
+        // Allowed by PATHS (query string ignored, {mpan} template matches one segment):
+        assertThat(reg.isAllowed("GET", "/api/v1/fmar/assets?importMpan=1")).isTrue();
+        assertThat(reg.isAllowed("POST", "/api/v1/fmar/assets")).isTrue();
+        assertThat(reg.isAllowed("GET", "/api/v1/fmar/assets/1000000000001")).isTrue();
+        // Not allowed:
+        assertThat(reg.isAllowed("GET", "/api/v1/fmar/assets/getClientID/extra")).isFalse();
+        assertThat(reg.isAllowed("DELETE", "/api/v1/fmar/assets")).isFalse();
+        assertThat(reg.isAllowed("GET", null)).isFalse();
+    }
+
     // ── Path validation ───────────────────────────────────────────────────────
 
     @Test @DisplayName("get() throws IllegalArgumentException for unknown producerId")
