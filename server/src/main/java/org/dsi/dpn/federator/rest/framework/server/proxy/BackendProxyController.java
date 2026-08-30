@@ -95,13 +95,18 @@ public class BackendProxyController {
     }
 
     /**
-     * Catch-all forwarder. Mapped to GET and POST only — the methods the gateway
-     * currently federates. Springdoc/actuator paths are excluded so Swagger and
-     * health endpoints keep working.
+     * Catch-all forwarder for the standard REST verbs (GET, POST, PUT, PATCH, DELETE)
+     * — matching the verbs the rest-federator-client exposes. The forwarding logic
+     * below is method-agnostic (it reads the actual request method and forwards an
+     * optional body), so a data product may use any of these. Springdoc/actuator
+     * paths are excluded so Swagger and health endpoints keep working. Method+path
+     * authorisation is still enforced upstream by DsiProductAuthorizationFilter, so a
+     * verb the product does not permit is rejected with 403 before reaching here.
      */
     @RequestMapping(
             value = "/**",
-            method = {RequestMethod.GET, RequestMethod.POST})
+            method = {RequestMethod.GET, RequestMethod.POST, RequestMethod.PUT,
+                    RequestMethod.PATCH, RequestMethod.DELETE})
     public ResponseEntity<byte[]> forward(HttpServletRequest request,
                                           @RequestBody(required = false) byte[] body) {
 

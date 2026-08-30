@@ -14,10 +14,13 @@ import org.dsi.dpn.common.utils.PropertyUtil;
  * Job's {@code env:} block is templated from Helm values, which the CD pipeline
  * sets per run (see charts/dpn-demo-runner-client).
  *
- * <p>{@code PRODUCT_NAME} is mandatory: it is the DSM data product name the
- * rest-federator-client resolves the producer host and credentials from.
+ * <p>{@code ORGANISATION_NAME} and {@code PRODUCT_NAME} are mandatory: together they identify the
+ * DSM data product, and the rest-federator-client resolves the producer host, internal producer id
+ * and credentials from them. The producer id is never supplied here — it is internal to the
+ * Management Node and the client learns it from getConsumerConfig.
  */
 public record DemoParameters(
+        String organisation,
         String productName,
         String importMpan,
         String postcode,
@@ -34,18 +37,16 @@ public record DemoParameters(
     /**
      * Reads parameters from the environment, falling back to client.properties
      * and then to demo defaults.
-     *
-     * @throws IllegalArgumentException if the product name is not supplied
      */
     public static DemoParameters resolve() {
+        // ORGANISATION_NAME and PRODUCT_NAME may each be a single value, a comma-separated list, or
+        // blank. They filter the client's subscription registry to the targets to run against
+        // (see FmarDemoRunner.resolveTargets) — blank/blank targets every subscribed product.
+        String organisation = resolveValue("ORGANISATION_NAME", "federator.rest.organisation", "");
         String productName = resolveValue("PRODUCT_NAME", "federator.rest.product.name", "");
-        if (productName.isBlank()) {
-            throw new IllegalArgumentException(
-                    "No data product name supplied. Set the PRODUCT_NAME environment "
-                            + "variable or federator.rest.product.name in client.properties.");
-        }
 
         return new DemoParameters(
+                organisation,
                 productName,
                 resolveValue("MPAN", "federator.rest.demo.mpan", DEFAULT_MPAN),
                 resolveValue("POSTCODE", "federator.rest.demo.postcode", DEFAULT_POSTCODE),

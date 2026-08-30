@@ -70,6 +70,7 @@ final class ResultFormatter {
     /** Key/value summary block, used to echo the run's inputs. */
     String parameters(DemoParameters params) {
         return "\n" + THIN
+                + "\n  Organisation  : " + params.organisation()
                 + "\n  Product name  : " + params.productName()
                 + "\n  Import MPAN   : " + params.importMpan()
                 + "\n  Postcode      : " + params.postcode()
