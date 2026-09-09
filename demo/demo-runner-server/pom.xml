@@ -62,11 +62,18 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- Swagger UI / OpenAPI for the two FMAR endpoints -->
+        <!-- Swagger annotations only (@Operation, @Schema, @Tag, etc. used on the
+             FMAR model/controller classes below) — NOT the full springdoc-openapi
+             starter, which was removed above for the Spring Boot 4.0 upgrade.
+             This artifact has no Spring dependency at all, so it is unaffected by
+             Boot's package reorganisation; the annotations remain present on the
+             classpath for documentation purposes even with the live Swagger UI
+             endpoint gone. Version pinned directly since springdoc no longer
+             supplies it transitively — verify against Maven Central if bumping. -->
         <dependency>
-            <groupId>org.springdoc</groupId>
-            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-            <version>${springdoc.version}</version>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-annotations-jakarta</artifactId>
+            <version>2.2.21</version>
         </dependency>
 
         <dependency>

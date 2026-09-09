@@ -32,7 +32,7 @@ class OcspClientVerificationServiceImplTest {
 
     @BeforeEach
     void setUp() throws Exception {
-        // Override buildHttpClient() to inject mock — no real JKS file needed
+        // Override buildHttpClient() to inject mock - no real JKS file needed
         service = new OcspClientVerificationServiceImpl(testProps(), idpTokenService) {
             @Override
             protected java.net.http.HttpClient buildHttpClient(Properties p) {
@@ -59,7 +59,7 @@ class OcspClientVerificationServiceImplTest {
         assertThat(service.verify("elexon-prod-id")).isEqualTo(OcspStatus.ACTIVE);
     }
 
-    @Test @DisplayName("Returns REVOKED — outbound call should be blocked")
+    @Test @DisplayName("Returns REVOKED - outbound call should be blocked")
     void returnsRevoked() throws Exception {
         when(httpResponse.statusCode()).thenReturn(200);
         when(httpResponse.body()).thenReturn("{\"status\":\"REVOKED\"}");
@@ -72,7 +72,7 @@ class OcspClientVerificationServiceImplTest {
         assertThat(service.verify("elexon-prod-id")).isEqualTo(OcspStatus.NOT_FOUND);
     }
 
-    @Test @DisplayName("Passes producer clientId in URL — not empty string")
+    @Test @DisplayName("Passes producer clientId in URL - not empty string")
     void passesProducerClientId() throws Exception {
         when(httpResponse.statusCode()).thenReturn(200);
         when(httpResponse.body()).thenReturn("{\"status\":\"ACTIVE\"}");

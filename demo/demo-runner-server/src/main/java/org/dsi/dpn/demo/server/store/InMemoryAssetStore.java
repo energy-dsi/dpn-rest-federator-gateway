@@ -14,7 +14,7 @@ import org.dsi.dpn.demo.server.model.RegistrationResponseDetail;
 import org.springframework.stereotype.Component;
 
 /**
- * EXAMPLE ONLY — in-memory asset store.
+ * EXAMPLE ONLY - in-memory asset store.
  *
  * <p>Data is not persisted and is lost on restart. A real participant would
  * replace this with their own data source; the REST Federator gateway is
@@ -30,7 +30,7 @@ public class InMemoryAssetStore {
     private final Map<UUID, AssetRegistrationResponse> byId = new ConcurrentHashMap<>();
 
     public InMemoryAssetStore() {
-        log.warn("[EXAMPLE] InMemoryAssetStore active — data will NOT persist across restarts.");
+        log.warn("[EXAMPLE] InMemoryAssetStore active - data will NOT persist across restarts.");
     }
 
     /**
@@ -99,7 +99,7 @@ public class InMemoryAssetStore {
         return Optional.of(found);
     }
 
-    /** Crude illustrative score — rewards optional fields being populated. */
+    /** Crude illustrative score - rewards optional fields being populated. */
     private int qualityScore(NewAssetRegistrationRequest request) {
         int score = 60;
         if (request.getMetering() != null) score += 10;

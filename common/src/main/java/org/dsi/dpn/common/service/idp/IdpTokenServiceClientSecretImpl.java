@@ -66,6 +66,12 @@ public class IdpTokenServiceClientSecretImpl extends AbstractIdpTokenService {
 
     private String fetchTokenInternal() {
         try {
+            // Re-validated here (not just in the constructor) so the check is visible
+            // in the same method that sends idpClientSecret - SAST tools that flag
+            // CWE-319 based on per-method taint analysis do not otherwise see that
+            // this value can only ever be sent over https://.
+            requireHttps("idp.token.url", idpTokenUrl);
+
             String body = GRANT_TYPE
                     + EQUALS_SIGN
                     + CLIENT_CREDENTIALS

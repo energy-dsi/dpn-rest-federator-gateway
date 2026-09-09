@@ -20,7 +20,7 @@ import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 import org.dsi.dpn.common.utils.PropertyUtil;
 
 /**
- * EXAMPLE CONSUMER — calls a producer's FMAR asset endpoints through the
+ * EXAMPLE CONSUMER - calls a producer's FMAR asset endpoints through the
  * REST Federator gateway.
  *
  * <p>This is not gateway code: it is an application that imports the
@@ -32,10 +32,12 @@ import org.dsi.dpn.common.utils.PropertyUtil;
  * <p>Demo sequence (paths follow the MHHS FMAR specification, prefixed with
  * {@code /api/v1/fmar} for consistency with this gateway's other routes):
  * <ol>
- *   <li>{@code GET  /api/v1/fmar/assets?importMpan=…&postcode=…}  — expected to be absent (404)</li>
- *   <li>{@code POST /api/v1/fmar/fsp/{fspId}/assets}              — register the asset</li>
- *   <li>{@code GET  /api/v1/fmar/assets?importMpan=…&postcode=…}  — now present</li>
- *   <li>{@code POST /api/v1/fmar/fsp/{fspId}/assets}              — same MPAN again (409)</li>
+ *   <li>{@code GET  /api/v1/fmar/assets?importMpan=…&postcode=…}  - expected to be absent (404)</li>
+ *   <li>{@code POST /api/v1/fmar/fsp/{fspId}/assets}              - register the asset</li>
+ *   <li>{@code GET  /api/v1/fmar/assets?importMpan=…&postcode=…}  - now present</li>
+ *   <li>{@code POST /api/v1/fmar/fsp/{fspId}/assets}              - same MPAN again (409)</li>
+ *   <li>{@code GET  /api/v1/fmar/assets/getClientID}              - path not allowed (403)</li>
+ *   <li>{@code POST /api/v1/fmar/fsp/{fspId}/assets}              - invalid payload, missing required field (400)</li>
  * </ol>
  *
  * <p>Runs as a one-shot process: parameters come from environment variables (set
@@ -65,7 +67,7 @@ public class FmarDemoRunner {
         this.restClient = createRestClient();
     }
 
-    /** Visible for testing — lets a pre-built RestClient be injected. */
+    /** Visible for testing - lets a pre-built RestClient be injected. */
     FmarDemoRunner(DemoParameters params, RestClient restClient) {
         this.params = params;
         this.restClient = restClient;
@@ -82,7 +84,7 @@ public class FmarDemoRunner {
                 .setAttribute("dpn.product_name", params.productName())
                 .startSpan();
         try (Scope scope = root.makeCurrent()) {
-            log.info(fmt.banner("DSI REST Federator — FMAR Demo Client"));
+            log.info(fmt.banner("DSI REST Federator - FMAR Demo Client"));
             log.info(fmt.parameters(params));
 
             restClient.getAllRegistrations().forEach((name, reg) ->
@@ -92,7 +94,7 @@ public class FmarDemoRunner {
             List<ProductKey> targets = resolveTargets();
             if (targets.isEmpty()) {
                 log.warn("No target products resolved for organisation(s)='{}' productName(s)='{}'. "
-                                + "Nothing to run — check the subscriptions list above.",
+                                + "Nothing to run - check the subscriptions list above.",
                         params.organisation(), params.productName());
             } else {
                 log.info("Running the FMAR demo sequence against {} target(s): {}", targets.size(), targets);
@@ -116,13 +118,13 @@ public class FmarDemoRunner {
      * subscription registry (built from getConsumerConfig) against the ORGANISATION_NAME and
      * PRODUCT_NAME inputs, each of which may be a single value, a comma-separated list, or blank:
      * <ul>
-     *   <li>both blank — every product the consumer is subscribed to;</li>
-     *   <li>organisation(s) only — every product those organisation(s) offer (so a single org with
+     *   <li>both blank - every product the consumer is subscribed to;</li>
+     *   <li>organisation(s) only - every product those organisation(s) offer (so a single org with
      *       several products yields one target per product);</li>
-     *   <li>product(s) only — every organisation offering those product(s);</li>
-     *   <li>both — the intersection (named organisation(s) offering named product(s)).</li>
+     *   <li>product(s) only - every organisation offering those product(s);</li>
+     *   <li>both - the intersection (named organisation(s) offering named product(s)).</li>
      * </ul>
-     * Because targets are drawn from the registry, only genuinely subscribed products are selected —
+     * Because targets are drawn from the registry, only genuinely subscribed products are selected -
      * a typo can't produce a "not subscribed" call.
      */
     List<ProductKey> resolveTargets() {
@@ -151,7 +153,7 @@ public class FmarDemoRunner {
         String registerPath = registerPath();
 
         // Optional client-side fail-fast: a participant can check a call against the product's
-        // allowed paths (from consumer config) before making it. Purely advisory — the gateway
+        // allowed paths (from consumer config) before making it. Purely advisory - the gateway
         // enforces the same rule authoritatively, which step 5 relies on.
         logAllowedPathPreCheck(key, queryPath, registerPath);
 
@@ -160,6 +162,7 @@ public class FmarDemoRunner {
         inSpan("step3.lookupAfterRegistration", () -> step3LookupAfterRegistration(key, queryPath));
         inSpan("step4.registerDuplicate", () -> step4RegisterDuplicate(key, registerPath));
         inSpan("step5.forbiddenPath", () -> step5ForbiddenPath(key));
+        inSpan("step6.invalidPayload", () -> step6InvalidPayload(key, registerPath));
     }
 
     /** Runs a demo step inside its own child span so each step is distinct in the trace. */
@@ -175,13 +178,13 @@ public class FmarDemoRunner {
     /**
      * Demonstrates the optional client-side allowed-path pre-check. Reads the product's
      * allowed paths from the registry the client bootstrapped from consumer config and
-     * reports, for each path this run uses, whether it is permitted — the same check a
+     * reports, for each path this run uses, whether it is permitted - the same check a
      * participant would run to fail fast instead of receiving a 403 from the gateway.
      */
     private void logAllowedPathPreCheck(ProductKey key, String queryPath, String registerPath) {
         var registration = restClient.getRegistration(key);
         if (registration.isEmpty()) {
-            log.warn("Client-side pre-check skipped — not subscribed to {}", key);
+            log.warn("Client-side pre-check skipped - not subscribed to {}", key);
             return;
         }
         var reg = registration.get();
@@ -197,7 +200,7 @@ public class FmarDemoRunner {
                         ? "ALLOWED" : "NOT ALLOWED (a participant could stop here; step 5 calls anyway to show the gateway also rejects it)");
     }
 
-    // ── Steps ─────────────────────────────────────────────────────────────────
+    // -- Steps -----------------------------------------------------------------
 
     private void step1LookupBeforeRegistration(ProductKey key, String path) {
         log.info(fmt.step(1, "Query asset before registration (expect not found)"));
@@ -244,8 +247,8 @@ public class FmarDemoRunner {
 
     /**
      * Deliberately calls a path that is NOT in the DSM product's allowed-path
-     * configuration. The rest-federator-client does not itself police paths — it
-     * just makes the call — so the request reaches the gateway, where
+     * configuration. The rest-federator-client does not itself police paths - it
+     * just makes the call - so the request reaches the gateway, where
      * {@code DsiProductAuthorizationFilter}'s Stage 3 (method+path authorisation)
      * rejects it. Both this client's log AND the gateway's log show the failure,
      * demonstrating that server-side enforcement is what actually protects the API.
@@ -258,11 +261,31 @@ public class FmarDemoRunner {
             log.warn(fmt.failure("GET", path,
                     "Expected the gateway to reject this path but the request succeeded: " + body));
         } catch (Exception e) {
-            log.info(fmt.expected("GET", path, "FORBIDDEN — method+path not allowed", rootMessage(e)));
+            log.info(fmt.expected("GET", path, "FORBIDDEN - method+path not allowed", rootMessage(e)));
         }
     }
 
-    // ── Request building ──────────────────────────────────────────────────────
+    /**
+     * AC3 (FR-B-011c) - sends a payload the backend cannot accept: valid JSON,
+     * but missing the required "assetName" field. Demonstrates that the
+     * system flags the issue and returns an actionable error message, rather
+     * than either silently accepting bad data or failing with an opaque
+     * error. Added as its own step rather than reusing step 2's payload, so
+     * the normal registration flow in steps 2-4 is unaffected.
+     */
+    private void step6InvalidPayload(ProductKey key, String path) {
+        log.info(fmt.step(6, "Register with an invalid payload - missing required field (expect rejection)"));
+        try {
+            String body = restClient.post(
+                    key, path, invalidRegistrationPayload(), senderHeaders(false));
+            log.warn(fmt.failure("POST", path,
+                    "Expected the backend to reject this payload but the request succeeded: " + body));
+        } catch (Exception e) {
+            log.info(fmt.expected("POST", path, "BAD REQUEST - invalid payload rejected", rootMessage(e)));
+        }
+    }
+
+    // -- Request building ------------------------------------------------------
 
     /** {@code GET /assets} with the spec's required query parameters. */
     String assetQueryPath() {
@@ -299,7 +322,7 @@ public class FmarDemoRunner {
 
     /**
      * FMAR001 registration body. Built as a string rather than via a shared model
-     * class so this example stays independent of the backend's own types — a real
+     * class so this example stays independent of the backend's own types - a real
      * consumer would use whatever representation its systems already hold.
      */
     String registrationPayload() {
@@ -334,11 +357,51 @@ public class FmarDemoRunner {
                        params.contractualAuthorisation());
     }
 
+    /**
+     * FMAR001 registration body - AC3 TEST (FR-B-011c): "assetName" is
+     * omitted entirely (server requires @NotBlank). This is valid JSON, so
+     * Jackson deserializes it successfully and Bean Validation catches it -
+     * demo-runner-server's GlobalExceptionHandler.handleValidation() should
+     * return a 400 with details=["assetName: must not be blank"]. Used only
+     * by step 6, so it never disturbs the normal registration flow in steps
+     * 2-4, which continue to use the valid payload above.
+     */
+    String invalidRegistrationPayload() {
+        return """
+               {
+                 "installedCapacity": 2.5,
+                 "generationStorageIndicator": true,
+                 "demandIndicator": false,
+                 "assetStatus": "Energised",
+                 "energySourceTypes": ["Battery"],
+                 "network": {
+                   "importMpans": ["%s"],
+                   "gspGroupId": "_A",
+                   "connectionVoltage": "LV"
+                 },
+                 "location": {
+                   "domesticPremisesIndicator": false,
+                   "postcode": "%s"
+                 },
+                 "metering": {
+                   "meteringArrangementType": "Asset Metered",
+                   "meteringGranularity": "Half Hourly"
+                 },
+                 "registration": {
+                   "contractualAuthorisationIndicator": %s
+                 }
+               }
+               """.formatted(
+                       params.importMpan(),
+                       params.postcode(),
+                       params.contractualAuthorisation());
+    }
+
     private String encode(String value) {
         return java.net.URLEncoder.encode(value, java.nio.charset.StandardCharsets.UTF_8);
     }
 
-    /** Innermost cause message — the useful part when RestClient wraps an HTTP error. */
+    /** Innermost cause message - the useful part when RestClient wraps an HTTP error. */
     private String rootMessage(Throwable t) {
         Throwable cause = t;
         while (cause.getCause() != null && cause.getCause() != cause) {
@@ -347,11 +410,11 @@ public class FmarDemoRunner {
         return cause.getMessage() != null ? cause.getMessage() : cause.toString();
     }
 
-    // ── Entry point ───────────────────────────────────────────────────────────
+    // -- Entry point -----------------------------------------------------------
 
     /**
      * Standalone entry point. Requires client.properties (via the
-     * FEDERATOR_CLIENT_PROPERTIES environment variable or on the classpath) —
+     * FEDERATOR_CLIENT_PROPERTIES environment variable or on the classpath) -
      * the same file the gRPC Federator client uses.
      */
     public static void main(String[] args) {
@@ -360,7 +423,7 @@ public class FmarDemoRunner {
         // Consumer-side heartbeat. Unlike the long-running gateway, which beats on a
         // 15-minute schedule, the client is a one-shot Job: HeartbeatService emits
         // immediately on start, so a run produces heartbeat.started, a single
-        // component.heartbeat, and heartbeat.stopped bracketing the work — a beat
+        // component.heartbeat, and heartbeat.stopped bracketing the work - a beat
         // only while it is actually running, which is what the consumer side needs.
         HeartbeatService heartbeat = HeartbeatService.create(COMPONENT_NAME);
         heartbeat.start();

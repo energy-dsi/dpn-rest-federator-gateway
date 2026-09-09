@@ -24,20 +24,20 @@ import org.dsi.dpn.common.utils.PropertyUtil;
 import org.dsi.dpn.common.utils.SSLUtils;
 
 /**
- * FRAMEWORK — client side. Do not modify.
+ * FRAMEWORK - client side. Do not modify.
  *
  * Calls GET /api/v1/certificate/ocsp?clientId={producerClientId} on Management Node
  * before making any outbound REST call to the producer.
  *
  * This is the client-side equivalent of OcspServerInterceptor in the gRPC Federator,
- * but corrected — passes the actual producer clientId rather than empty string.
+ * but corrected - passes the actual producer clientId rather than empty string.
  *
  * Uses truststore-only SSL context (we verify Management Node TLS, no client cert
  * needed for this specific call).
  *
  * Properties read from common.configuration:
- *   management.node.base.url   — Management Node base URL
- *   idp.truststore.path        — JKS for verifying Management Node TLS cert
+ *   management.node.base.url   - Management Node base URL
+ *   idp.truststore.path        - JKS for verifying Management Node TLS cert
  *   idp.truststore.password
  */
 @Slf4j
@@ -76,7 +76,7 @@ public class OcspClientVerificationServiceImpl implements OcspClientVerification
      * PropertyUtil fallback is what supplies the value.
      *
      * <p>Reading the constructor parameter first restores this class's stated
-     * contract — it accepts a {@code Properties} and should honour it — and means
+     * contract - it accepts a {@code Properties} and should honour it - and means
      * a caller that already has the value, such as a unit test, does not have to
      * initialise the static PropertyUtil singleton just to construct the service.
      */
@@ -119,7 +119,7 @@ public class OcspClientVerificationServiceImpl implements OcspClientVerification
         // parameter's value, never redefine the destination host or smuggle
         // extra query parameters via '&'/'='.
         URI url = org.springframework.web.util.UriComponentsBuilder
-                .fromHttpUrl(managementNodeBaseUrl + OCSP_PATH)
+                .fromUriString(managementNodeBaseUrl + OCSP_PATH)
                 .queryParam("clientId", producerClientId)
                 .build()
                 .toUri();
@@ -152,7 +152,7 @@ public class OcspClientVerificationServiceImpl implements OcspClientVerification
     }
 
     /**
-     * Protected for testing — allows injection of a mock HttpClient.
+     * Protected for testing - allows injection of a mock HttpClient.
      * In production, returns a real HttpClient with mTLS truststore.
      */
     protected java.net.http.HttpClient buildHttpClient(java.util.Properties props) {
@@ -160,7 +160,7 @@ public class OcspClientVerificationServiceImpl implements OcspClientVerification
             javax.net.ssl.SSLContext sslCtx;
             // Same switch HttpClientFactoryUtils.createHttpClientWithMtls() uses:
             // when vault.tls.enabled=true there is no keystore/truststore file on
-            // disk — the cert manager's material lives only in Vault.
+            // disk - the cert manager's material lives only in Vault.
             if (org.dsi.dpn.common.service.secret.VaultTlsSupport.isVaultTlsEnabled()) {
                 sslCtx = org.dsi.dpn.common.service.secret.VaultTlsSupport.sslContext();
             } else {

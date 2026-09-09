@@ -77,12 +77,17 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- ── OpenAPI / Swagger UI ──────────────────────────────────── -->
-        <dependency>
-            <groupId>org.springdoc</groupId>
-            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-            <version>${springdoc.version}</version>
-        </dependency>
+        <!-- ── OpenAPI / Swagger UI ──────────────────────────────────────
+             REMOVED for the Spring Boot 4.0 upgrade: springdoc-openapi 2.9.0
+             is compiled against Boot 3.x's old autoconfigure package layout
+             (org.springframework.boot.autoconfigure.web.servlet.*), which
+             Boot 4.0 relocated to org.springframework.boot.webmvc.autoconfigure.*
+             — startup fails with ClassNotFoundException on WebMvcProperties.
+             No Boot-4.0-compatible springdoc version could be verified from
+             this environment (no network access). Documentation UI only, not
+             core functionality — re-add once a compatible version is confirmed
+             (check mvnrepository.com/artifact/org.springdoc/springdoc-openapi-starter-webmvc-ui
+             for Spring Boot 4.x support). -->
 
         <!-- ── Lombok ────────────────────────────────────────────────── -->
         <dependency>

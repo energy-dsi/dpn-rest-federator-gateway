@@ -40,7 +40,7 @@ class GlobalExceptionHandlerTest {
         when(br.getFieldErrors()).thenReturn(List.of(new FieldError("req", "mpan", "must not be blank")));
         ResponseEntity<ErrorResponse> res = handler.handleValidation(ex);
         assertThat(res.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
-        assertThat(res.getBody().getCode()).isEqualTo("BAD_REQUEST");
+        assertThat(res.getBody().getCode()).isEqualTo("VALIDATION_FAILED");
     }
 
     @Test @DisplayName("parameter validation -> 400 BAD_REQUEST")

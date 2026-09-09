@@ -30,25 +30,25 @@ import org.springframework.http.HttpEntity;
 import java.net.URI;
 
 /**
- * FRAMEWORK — generic authorising reverse proxy.
+ * FRAMEWORK - generic authorising reverse proxy.
  *
  * <p>The REST Federator gateway carries no business knowledge. Every request that
  * reaches this controller has already passed the full security chain:
  * <ol>
  *   <li>mTLS termination (Spring Boot SSL bundle, client-auth=need)</li>
  *   <li>JWT signature validation against the DSM Identity Provider's JWKS</li>
- *   <li>Consumer verification — caller is registered against a REST product</li>
- *   <li>OCSP — caller's certificate is not revoked</li>
- *   <li>Method+path authorisation — {@code METHOD:path} matched against the
+ *   <li>Consumer verification - caller is registered against a REST product</li>
+ *   <li>OCSP - caller's certificate is not revoked</li>
+ *   <li>Method+path authorisation - {@code METHOD:path} matched against the
  *       product's DSM topic configuration</li>
  * </ol>
  *
- * <p>This controller then forwards the request — method, path, query string,
- * headers and body — to the configured backend and returns the backend's status,
+ * <p>This controller then forwards the request - method, path, query string,
+ * headers and body - to the configured backend and returns the backend's status,
  * headers and body verbatim. It never inspects or reshapes the payload, so the
  * gateway works unchanged for any data product.
  *
- * <p>The gateway→backend hop is authenticated with a shared secret
+ * <p>The gateway->backend hop is authenticated with a shared secret
  * ({@link BackendProperties#API_KEY_HEADER}), since the backend does not
  * participate in the DPN's mTLS/JWT trust chain.
  */
@@ -96,7 +96,7 @@ public class BackendProxyController {
 
     /**
      * Catch-all forwarder for the standard REST verbs (GET, POST, PUT, PATCH, DELETE)
-     * — matching the verbs the rest-federator-client exposes. The forwarding logic
+     * - matching the verbs the rest-federator-client exposes. The forwarding logic
      * below is method-agnostic (it reads the actual request method and forwards an
      * optional body), so a data product may use any of these. Springdoc/actuator
      * paths are excluded so Swagger and health endpoints keep working. Method+path
@@ -124,7 +124,7 @@ public class BackendProxyController {
                 .startSpan();
         try (Scope scope = span.makeCurrent()) {
             if (backendProperties.baseUrl() == null || backendProperties.baseUrl().isBlank()) {
-                log.error("backend.base-url is not configured — cannot forward {} {}",
+                log.error("backend.base-url is not configured - cannot forward {} {}",
                         method, request.getRequestURI());
                 span.setStatus(StatusCode.ERROR, "backend.base-url not configured");
                 return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build();
@@ -135,7 +135,7 @@ public class BackendProxyController {
             if (backendProperties.hasApiKey()) {
                 outboundHeaders.set(BackendProperties.API_KEY_HEADER, backendProperties.apiKey());
             } else {
-                log.warn("backend.api-key is not configured — forwarding {} {} without an API key",
+                log.warn("backend.api-key is not configured - forwarding {} {} without an API key",
                         method, request.getRequestURI());
             }
 
@@ -153,7 +153,7 @@ public class BackendProxyController {
                     .body(backendResponse.getBody());
 
         } catch (HttpStatusCodeException e) {
-            // Backend returned 4xx/5xx — pass it through unchanged so the consumer
+            // Backend returned 4xx/5xx - pass it through unchanged so the consumer
             // sees the backend's real status and error body.
             log.warn("Backend returned {} for {} {}",
                     e.getStatusCode(), method, request.getRequestURI());
@@ -185,7 +185,7 @@ public class BackendProxyController {
      *
      * <p>Built via {@link UriComponentsBuilder} rather than string concatenation
      * so the destination scheme/host/port always come from the fixed, configured
-     * {@code backendProperties.baseUrl()} — the request-derived path and query
+     * {@code backendProperties.baseUrl()} - the request-derived path and query
      * can only ever populate the path/query components of that same authority,
      * never redefine it. Both are already-authorized/opaque data by this point
      * (path matched an allowed-path entry upstream; query is forwarded verbatim
@@ -193,14 +193,42 @@ public class BackendProxyController {
      * {@code build(true)} so they are not re-encoded.
      */
     URI buildTargetUrl(HttpServletRequest request) {
+        URI configuredBackend = URI.create(backendProperties.baseUrl());
+
         UriComponentsBuilder builder = UriComponentsBuilder
-                .fromHttpUrl(backendProperties.baseUrl())
+                .fromUriString(backendProperties.baseUrl())
                 .path(request.getRequestURI());
         String query = request.getQueryString();
         if (query != null && !query.isBlank()) {
             builder.query(query);
         }
-        return builder.build(true).toUri();
+        URI target = builder.build(true).toUri();
+
+        // Belt-and-suspenders check for CWE-918 (SSRF): request.getRequestURI() can only
+        // ever populate the path component above, never the scheme/host/port - but assert
+        // it explicitly here, at the sink, rather than relying solely on that API guarantee
+        // documented on buildTargetUrl's javadoc. Fails closed if it is ever violated,
+        // e.g. by a future refactor that builds the URL by string concatenation instead.
+        if (!authorityMatches(configuredBackend, target)) {
+            throw new IllegalStateException(
+                    "Refusing to forward request - target authority " + target.getAuthority()
+                            + " does not match configured backend " + configuredBackend.getAuthority());
+        }
+
+        return target;
+    }
+
+    private static boolean authorityMatches(URI configured, URI target) {
+        return configured.getScheme().equalsIgnoreCase(target.getScheme())
+                && configured.getHost().equalsIgnoreCase(target.getHost())
+                && resolvedPort(configured) == resolvedPort(target);
+    }
+
+    private static int resolvedPort(URI uri) {
+        if (uri.getPort() != -1) {
+            return uri.getPort();
+        }
+        return "https".equalsIgnoreCase(uri.getScheme()) ? 443 : 80;
     }
 
     HttpHeaders copyRequestHeaders(HttpServletRequest request) {

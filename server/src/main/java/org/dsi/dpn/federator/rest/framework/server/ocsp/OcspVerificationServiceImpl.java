@@ -24,22 +24,22 @@ import org.dsi.dpn.common.utils.PropertyUtil;
 import org.dsi.dpn.common.utils.SSLUtils;
 
 /**
- * FRAMEWORK — server side. Do not modify.
+ * FRAMEWORK - server side. Do not modify.
  *
  * Calls GET /api/v1/certificate/ocsp?clientId={clientId} on the Management Node.
  * Uses the same mTLS HttpClient pattern as OcspCertificateVerificationServiceImpl
  * in the gRPC Federator. Uses a truststore-only SSL context (no client key needed
- * for this outbound call — Management Node accepts the server's existing cert).
+ * for this outbound call - Management Node accepts the server's existing cert).
  *
- * The gRPC OcspServerInterceptor passed an empty string as clientId — this
+ * The gRPC OcspServerInterceptor passed an empty string as clientId - this
  * implementation fixes that by always passing the actual consumer clientId
  * extracted from the JWT azp claim by DsiProductAuthorizationFilter.
  *
  * Emits OTEL-format structured log for every verification attempt.
  *
  * Properties read from common.configuration (already loaded by server):
- *   management.node.base.url   — Management Node base URL
- *   idp.truststore.path        — JKS for verifying Management Node TLS cert
+ *   management.node.base.url   - Management Node base URL
+ *   idp.truststore.path        - JKS for verifying Management Node TLS cert
  *   idp.truststore.password
  */
 @Slf4j
@@ -77,7 +77,7 @@ public class OcspVerificationServiceImpl implements OcspVerificationService {
      * <p>{@code management.node.base.url} is declared in {@code server.properties},
      * not in any {@code common-configuration*.properties}, so in production the
      * injected common properties do not carry it and the PropertyUtil fallback is
-     * what supplies the value — mirrors OcspClientVerificationServiceImpl's
+     * what supplies the value - mirrors OcspClientVerificationServiceImpl's
      * resolution on the client side.
      */
     private static String resolveManagementNodeBaseUrl(Properties commonProps) {
@@ -114,12 +114,12 @@ public class OcspVerificationServiceImpl implements OcspVerificationService {
 
     private OcspStatus checkStatus(String clientId) throws Exception {
         // Fix for gRPC bug: always pass the actual clientId, never empty string.
-        // Built via UriComponentsBuilder (not string concatenation) so clientId —
-        // JWT-derived, but still request-influenced data — can only ever populate
+        // Built via UriComponentsBuilder (not string concatenation) so clientId -
+        // JWT-derived, but still request-influenced data - can only ever populate
         // the clientId query parameter's value, never redefine the destination
         // host or smuggle extra query parameters via '&'/'='.
         URI url = org.springframework.web.util.UriComponentsBuilder
-                .fromHttpUrl(managementNodeBaseUrl + OCSP_PATH)
+                .fromUriString(managementNodeBaseUrl + OCSP_PATH)
                 .queryParam("clientId", clientId)
                 .build()
                 .toUri();
@@ -152,14 +152,14 @@ public class OcspVerificationServiceImpl implements OcspVerificationService {
     }
 
     /**
-     * Protected for testing — allows injection of a mock HttpClient.
+     * Protected for testing - allows injection of a mock HttpClient.
      * In production, returns a real HttpClient with mTLS truststore.
      */
     protected java.net.http.HttpClient buildHttpClient(java.util.Properties props) {
         try {
             javax.net.ssl.SSLContext sslCtx;
             // Same switch HttpClientFactoryUtils.createHttpClientWithMtls() uses:
-            // when vault.tls.enabled=true there is no truststore file on disk —
+            // when vault.tls.enabled=true there is no truststore file on disk -
             // the cert manager's material lives only in Vault.
             if (org.dsi.dpn.common.service.secret.VaultTlsSupport.isVaultTlsEnabled()) {
                 sslCtx = javax.net.ssl.SSLContext.getInstance("TLS");

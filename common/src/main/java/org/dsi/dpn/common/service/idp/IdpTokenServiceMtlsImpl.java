@@ -94,6 +94,12 @@ public class IdpTokenServiceMtlsImpl extends AbstractIdpTokenService {
                 log.debug("No cached token in Redis for management node {}, fetching from IDP", managementNodeId);
             }
 
+            // Re-validated here (not just in the constructor) so the check is visible
+            // in the same method that sends idpClientSecret - SAST tools that flag
+            // CWE-319 based on per-method taint analysis do not otherwise see that
+            // this value can only ever be sent over https://.
+            requireHttps("idp.token.url", idpTokenUrl);
+
             String body =
 /*                    GRANT_TYPE + EQUALS_SIGN + CLIENT_CREDENTIALS + AMPERSAND + CLIENT_ID + EQUALS_SIGN + idpClientId; */
                     GRANT_TYPE + EQUALS_SIGN + CLIENT_CREDENTIALS + AMPERSAND + CLIENT_ID + EQUALS_SIGN + idpClientId + AMPERSAND +  CLIENT_SECRET + EQUALS_SIGN + idpClientSecret;

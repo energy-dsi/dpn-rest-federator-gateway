@@ -79,7 +79,7 @@ class ResultFormatterTest {
 
     @Test @DisplayName("step() and banner() render headings")
     void headings() {
-        assertThat(fmt.step(2, "Register the asset")).contains("STEP 2 — Register the asset");
+        assertThat(fmt.step(2, "Register the asset")).contains("STEP 2 - Register the asset");
         assertThat(fmt.banner("DEMO COMPLETE")).contains("DEMO COMPLETE");
     }
 }

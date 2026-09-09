@@ -7,6 +7,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.dsi.dpn.demo.server.store.InMemoryAssetStore;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -40,7 +41,20 @@ public class GlobalExceptionHandler {
                 .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
                 .toList();
         log.warn("Body validation failed: {}", details);
-        return badRequest("Request validation failed.");
+        // Field names and Bean Validation messages are safe to return - they
+        // describe this service's own request schema, not caller-supplied data.
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ErrorResponse.builder()
+                        .code("VALIDATION_FAILED")
+                        .message("Request validation failed.")
+                        .details(details)
+                        .build());
+    }
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleUnreadableBody(HttpMessageNotReadableException ex) {
+        log.warn("Malformed request body: {}", ex.getMessage());
+        return badRequest("Request body is not valid JSON or does not match the expected schema.");
     }
 
     @ExceptionHandler(HandlerMethodValidationException.class)

@@ -28,7 +28,7 @@ import static org.mockito.Mockito.*;
 
 /**
  * Unit tests for RestClient.
- * Uses package-visible constructor to inject mocks — no Management Node,
+ * Uses package-visible constructor to inject mocks - no Management Node,
  * no PropertyUtil, no SSL required.
  */
 @ExtendWith(MockitoExtension.class)
@@ -91,7 +91,7 @@ class RestClientTest {
         when(webClient.delete()).thenReturn(getSpec);
     }
 
-    // ── getRegistration / getAllRegistrations ─────────────────────────────────
+    // -- getRegistration / getAllRegistrations ---------------------------------
 
     @Test @DisplayName("getRegistration() returns registration for known producerId")
     void getRegistration_found() {
@@ -126,7 +126,7 @@ class RestClientTest {
         assertThat(reg.isAllowed("GET", null)).isFalse();
     }
 
-    // ── Path validation ───────────────────────────────────────────────────────
+    // -- Path validation -------------------------------------------------------
 
     @Test @DisplayName("get() throws IllegalArgumentException for unknown producerId")
     void get_unknownProducer() {
@@ -135,7 +135,7 @@ class RestClientTest {
                 .hasMessageContaining("No REST product registered for");
     }
 
-    @Test @DisplayName("get() passes the path straight through — no client-side path policing")
+    @Test @DisplayName("get() passes the path straight through - no client-side path policing")
     void get_pathPassedThrough() {
         // The client does not validate paths against allowedPaths; the gateway is
         // the authority. Any path the caller supplies is sent as-is.
@@ -149,7 +149,7 @@ class RestClientTest {
         assertThat(response).isEqualTo("mock-response");
     }
 
-    // ── OCSP check ────────────────────────────────────────────────────────────
+    // -- OCSP check ------------------------------------------------------------
 
     @Test @DisplayName("get() blocked when OCSP returns REVOKED")
     void get_ocspRevoked() {
@@ -175,7 +175,7 @@ class RestClientTest {
                 .hasMessageContaining("OCSP status=NOT_FOUND");
     }
 
-    // ── Successful GET / POST ─────────────────────────────────────────────────
+    // -- Successful GET / POST -------------------------------------------------
 
     @Test @DisplayName("get() returns response body string on success")
     void get_success() {
@@ -266,7 +266,7 @@ class RestClientTest {
                 .hasMessageContaining("POST failed: HTTP");
     }
 
-    // ── ProductRegistration record ────────────────────────────────────────────
+    // -- ProductRegistration record --------------------------------------------
 
     @Test @DisplayName("ProductRegistration record accessors work correctly")
     void productRegistration_accessors() {

@@ -42,10 +42,10 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
     public ApiKeyAuthFilter(@Value("${backend.api-key:}") String expectedApiKey) {
         this.expectedApiKey = expectedApiKey;
         if (expectedApiKey == null || expectedApiKey.isBlank()) {
-            log.warn("backend.api-key is not set — API key authentication is DISABLED. "
+            log.warn("backend.api-key is not set - API key authentication is DISABLED. "
                     + "Set BACKEND_API_KEY to require callers to authenticate.");
         } else {
-            log.info("ApiKeyAuthFilter initialised — requests must carry {}", API_KEY_HEADER);
+            log.info("ApiKeyAuthFilter initialised - requests must carry {}", API_KEY_HEADER);
         }
     }
 
@@ -64,7 +64,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
                                     FilterChain chain)
             throws ServletException, IOException {
 
-        // No key configured — run open (local development only; a warning is
+        // No key configured - run open (local development only; a warning is
         // logged at startup so this cannot pass unnoticed in a deployment).
         if (expectedApiKey == null || expectedApiKey.isBlank()) {
             chain.doFilter(request, response);
@@ -73,7 +73,7 @@ public class ApiKeyAuthFilter extends OncePerRequestFilter {
 
         String provided = request.getHeader(API_KEY_HEADER);
         if (provided == null || !constantTimeEquals(provided, expectedApiKey)) {
-            log.warn("Rejected {} {} — missing or invalid {}",
+            log.warn("Rejected {} {} - missing or invalid {}",
                     request.getMethod(), request.getRequestURI(), API_KEY_HEADER);
             response.setStatus(HttpStatus.UNAUTHORIZED.value());
             response.setContentType(MediaType.APPLICATION_JSON_VALUE);

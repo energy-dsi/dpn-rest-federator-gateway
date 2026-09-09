@@ -51,7 +51,7 @@ class BackendProxyControllerTest {
         return req;
     }
 
-    // ── Target URL ────────────────────────────────────────────────────────────
+    // -- Target URL ------------------------------------------------------------
 
     @Test @DisplayName("buildTargetUrl() appends the path and query string")
     void buildTargetUrl_withQuery() {
@@ -77,7 +77,7 @@ class BackendProxyControllerTest {
                 .isEqualTo(URI.create(BASE_URL + "/assets"));
     }
 
-    // ── Header handling ───────────────────────────────────────────────────────
+    // -- Header handling -------------------------------------------------------
 
     @Test @DisplayName("Forwards caller headers but not Authorization or Host")
     void copyRequestHeaders_dropsHopByHopAndAuth() {
@@ -93,9 +93,9 @@ class BackendProxyControllerTest {
         assertThat(headers.getFirst("X-Sender-FMAR-Id")).isEqualTo("fsp-001");
         assertThat(headers.getFirst("X-Sender-Role")).isEqualTo("FSP");
         // The consumer's DPN token is not passed to the internal backend.
-        assertThat(headers.containsKey("Authorization")).isFalse();
-        assertThat(headers.containsKey("Host")).isFalse();
-        assertThat(headers.containsKey("Connection")).isFalse();
+        assertThat(headers.containsHeader("Authorization")).isFalse();
+        assertThat(headers.containsHeader("Host")).isFalse();
+        assertThat(headers.containsHeader("Connection")).isFalse();
     }
 
     @Test @DisplayName("filterResponseHeaders() drops connection-scoped headers")
@@ -108,16 +108,16 @@ class BackendProxyControllerTest {
         HttpHeaders filtered = controller.filterResponseHeaders(source);
 
         assertThat(filtered.getFirst("Content-Type")).isEqualTo("application/json");
-        assertThat(filtered.containsKey("Transfer-Encoding")).isFalse();
-        assertThat(filtered.containsKey("Connection")).isFalse();
+        assertThat(filtered.containsHeader("Transfer-Encoding")).isFalse();
+        assertThat(filtered.containsHeader("Connection")).isFalse();
     }
 
     @Test @DisplayName("filterResponseHeaders() tolerates a null source")
     void filterResponseHeaders_nullSource() {
-        assertThat(controller.filterResponseHeaders(null)).isEmpty();
+        assertThat(controller.filterResponseHeaders(null).isEmpty()).isTrue();
     }
 
-    // ── Forwarding ────────────────────────────────────────────────────────────
+    // -- Forwarding ------------------------------------------------------------
 
     @Test @DisplayName("Attaches the API key and returns the backend's response")
     void forward_attachesApiKeyAndReturnsResponse() {

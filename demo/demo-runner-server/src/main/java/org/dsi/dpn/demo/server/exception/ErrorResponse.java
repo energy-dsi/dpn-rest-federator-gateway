@@ -19,4 +19,6 @@ public class ErrorResponse {
     private String code;
     private String message;
     private List<String> conflictingMpans;
+    /** Field-level validation failures, e.g. "assetName: must not be blank". */
+    private List<String> details;
 }

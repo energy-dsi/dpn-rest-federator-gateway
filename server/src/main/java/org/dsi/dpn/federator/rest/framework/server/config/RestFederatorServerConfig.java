@@ -9,9 +9,7 @@ import java.util.Properties;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.ssl.SslBundleRegistrar;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -21,7 +19,6 @@ import org.dsi.dpn.common.exception.FederatorSslException;
 import org.dsi.dpn.common.management.ManagementNodeDataHandler;
 import org.dsi.dpn.common.service.config.ProducerConfigService;
 import org.dsi.dpn.common.service.idp.IdpTokenService;
-import org.dsi.dpn.common.service.secret.VaultSslBundleRegistrar;
 import org.dsi.dpn.common.service.secret.VaultTlsSupport;
 import org.dsi.dpn.common.storage.InMemoryConfigurationStore;
 import org.dsi.dpn.common.utils.IdpTokenServiceFactory;
@@ -32,7 +29,7 @@ import org.dsi.dpn.federator.rest.framework.server.ocsp.OcspVerificationService;
 import org.dsi.dpn.federator.rest.framework.server.ocsp.OcspVerificationServiceImpl;
 
 /**
- * FRAMEWORK — do not modify.
+ * FRAMEWORK - do not modify.
  *
  * Wires existing gRPC Federator common components as Spring beans.
  * Also wires OcspVerificationService used by DsiProductAuthorizationFilter
@@ -54,11 +51,46 @@ public class RestFederatorServerConfig {
         log.info("PropertyUtil initialised for REST Federator Server");
     }
 
-    /** Sources this gateway's own inbound {@code federator-tls} bundle from Vault. */
-    @Bean
-    public SslBundleRegistrar vaultSslBundleRegistrar() {
-        return new VaultSslBundleRegistrar("federator-tls");
-    }
+    // -- DISABLED - replaced by the file-based approach ----------------------
+    // VaultFileBasedSslBundleInitializer.initialise("federator-tls") in
+    // RestFederatorServerApplication.main() now handles this. The in-memory
+    // SslBundleRegistrar approach below is confirmed not to work correctly
+    // under this project's current Spring Boot version - verified via a real
+    // TLS handshake test (openssl s_client) showing the wrong certificate
+    // served. Kept here, commented, in case that connector-wiring defect is
+    // fixed in a future Spring Boot version and this simpler approach can be
+    // restored.
+    //
+    // @Bean
+    // public static SslBundleRegistrar vaultSslBundleRegistrar() {
+    //     return new VaultSslBundleRegistrar("federator-tls");
+    // }
+
+    // -- ALSO DISABLED - disproven theory, kept for reference ----------------
+    // This forced dependsOn ordering; we later proved (via openssl s_client)
+    // that ordering was never the actual problem - registration already ran
+    // before Tomcat initialised, and the wrong certificate was still served.
+    // Left commented rather than deleted, as a record of what was ruled out.
+    //
+    // @Bean
+    // public static org.springframework.beans.factory.config.BeanFactoryPostProcessor tomcatSslOrderingFix() {
+    //     return beanFactory -> {
+    //         String[] factoryBeanNames = beanFactory.getBeanNamesForType(
+    //                 org.springframework.boot.web.server.servlet.ServletWebServerFactory.class, false, false);
+    //         for (String beanName : factoryBeanNames) {
+    //             org.springframework.beans.factory.config.BeanDefinition bd = beanFactory.getBeanDefinition(beanName);
+    //             String[] existing = bd.getDependsOn();
+    //             String[] updated;
+    //             if (existing == null || existing.length == 0) {
+    //                 updated = new String[] {"sslBundleRegistry"};
+    //             } else {
+    //                 updated = java.util.Arrays.copyOf(existing, existing.length + 1);
+    //                 updated[existing.length] = "sslBundleRegistry";
+    //             }
+    //             bd.setDependsOn(updated);
+    //         }
+    //     };
+    // }
 
     @Bean
     public IdpTokenService idpTokenService() {
@@ -84,7 +116,7 @@ public class RestFederatorServerConfig {
     }
 
     /**
-     * OCSP verification service — used by DsiProductAuthorizationFilter (Stage 2).
+     * OCSP verification service - used by DsiProductAuthorizationFilter (Stage 2).
      * Calls GET /api/v1/certificate/ocsp?clientId={consumerId} on Management Node.
      * Fixes gRPC OcspServerInterceptor bug: passes actual consumerId, not empty string.
      */
@@ -97,18 +129,20 @@ public class RestFederatorServerConfig {
     /**
      * Outbound client used by BackendProxyController to forward authorized requests
      * to the internal backend. The backend is authenticated with the shared API key,
-     * not mTLS — but when it terminates HTTPS with the same Vault-issued certificate
+     * not mTLS - but when it terminates HTTPS with the same Vault-issued certificate
      * this gateway uses, this client needs to trust that certificate's CA. No client
      * cert is presented here (server-only TLS on the backend's side).
      */
     @Bean
-    public RestTemplate backendRestTemplate(RestTemplateBuilder builder) {
-        RestTemplateBuilder configured = builder
-                .connectTimeout(Duration.ofSeconds(10))
-                .readTimeout(Duration.ofSeconds(60));
+    public RestTemplate backendRestTemplate() {
+        int connectTimeoutMs = (int) Duration.ofSeconds(10).toMillis();
+        int readTimeoutMs = (int) Duration.ofSeconds(60).toMillis();
 
         if (!VaultTlsSupport.isVaultTlsEnabled()) {
-            return configured.build();
+            SimpleClientHttpRequestFactory plainFactory = new SimpleClientHttpRequestFactory();
+            plainFactory.setConnectTimeout(connectTimeoutMs);
+            plainFactory.setReadTimeout(readTimeoutMs);
+            return new RestTemplate(plainFactory);
         }
 
         try {
@@ -132,7 +166,9 @@ public class RestFederatorServerConfig {
                     super.prepareConnection(connection, httpMethod);
                 }
             };
-            return configured.requestFactory(() -> requestFactory).build();
+            requestFactory.setConnectTimeout(connectTimeoutMs);
+            requestFactory.setReadTimeout(readTimeoutMs);
+            return new RestTemplate(requestFactory);
         } catch (Exception e) {
             throw new FederatorSslException("Failed to build backend RestTemplate SSLContext", e);
         }

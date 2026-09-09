@@ -3,21 +3,20 @@
 package org.dsi.dpn.demo.server.config;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.ssl.SslBundleRegistrar;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.dsi.dpn.common.service.secret.VaultSslBundleRegistrar;
 import org.dsi.dpn.common.utils.PropertyUtil;
 
 /**
- * Sources this demo backend's own inbound HTTPS listener from Vault — the same
- * certificate the gateway uses, via the same {@link VaultSslBundleRegistrar} the
- * gateway's own config wires in. Demonstrates that a second Spring Boot service can
- * reuse the DPN's shared Vault identity, exactly as the gRPC federator's real
- * components each did when calling Vault over HTTPS.
+ * Retains PropertyUtil initialisation for demo-runner-server. This app's inbound
+ * HTTPS listener is sourced from Vault by {@link org.dsi.dpn.common.service.secret.VaultFileBasedSslBundleInitializer},
+ * called from {@code DemoRunnerServerApplication.main()} before Spring starts -
+ * not by any bean in this class. The in-memory {@code SslBundleRegistrar}
+ * approach previously used here is confirmed (via a real TLS handshake test,
+ * {@code openssl s_client}) not to work correctly under this project's current
+ * Spring Boot version; see the disabled beans below for that history.
  *
  * <p>Server-only TLS: no {@code server.ssl.client-auth} is set, so this backend
- * doesn't require or validate a client certificate from the gateway — only the
+ * doesn't require or validate a client certificate from the gateway - only the
  * shared API key ({@code ApiKeyAuthFilter}) authenticates that hop.
  */
 @Configuration
@@ -31,7 +30,7 @@ public class DemoRunnerServerConfig {
         // other @Configuration classes are fully processed). Declaring this
         // static block in the SAME class as the @Bean method below guarantees,
         // via ordinary Java class-initialisation ordering, that it always runs
-        // first — regardless of when Spring actually invokes the bean method.
+        // first - regardless of when Spring actually invokes the bean method.
         if (!PropertyUtil.initializeProperties()) {
             throw new IllegalStateException(
                     "demo-runner-server: failed to initialise PropertyUtil. "
@@ -40,8 +39,30 @@ public class DemoRunnerServerConfig {
         log.info("PropertyUtil initialised for demo-runner-server");
     }
 
-    @Bean
-    public SslBundleRegistrar vaultSslBundleRegistrar() {
-        return new VaultSslBundleRegistrar("demo-runner-tls");
-    }
+    // -- PERMANENTLY DISABLED - kept as a record, not a "test" ---------------
+    // Confirmed via a real TLS handshake test (openssl s_client) that the
+    // in-memory SslBundleRegistrar approach serves the wrong certificate under
+    // this project's current Spring Boot version. VaultFileBasedSslBundleInitializer,
+    // called from DemoRunnerServerApplication.main(), is the actual, working fix.
+    // Having both the registrar AND file-based properties active for the same
+    // bundle name would conflict - see the original application.properties
+    // comment on exactly this. Kept here, commented, only in case that
+    // connector-wiring defect is fixed in a future Spring Boot version and this
+    // simpler approach can be restored.
+    //
+    // @Bean
+    // public static SslBundleRegistrar vaultSslBundleRegistrar() {
+    //     return new VaultSslBundleRegistrar("demo-runner-tls");
+    // }
+    //
+    // @Bean
+    // public static org.springframework.beans.factory.config.BeanFactoryPostProcessor tomcatSslOrderingFix() {
+    //     ...
+    // }
+    //
+    // @Bean
+    // public org.springframework.boot.web.server.WebServerFactoryCustomizer<
+    //         org.springframework.boot.tomcat.servlet.TomcatServletWebServerFactory> vaultSslProgrammaticCustomizer() {
+    //     ...
+    // }
 }

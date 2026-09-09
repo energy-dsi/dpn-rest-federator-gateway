@@ -51,7 +51,7 @@ import org.dsi.dpn.common.storage.InMemoryConfigurationStore;
 import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 
 /**
- * FRAMEWORK — do not modify.
+ * FRAMEWORK - do not modify.
  *
  * Self-contained REST client for the DSI REST Federator consumer side.
  * No dependency on FederatorClient, ClientDynamicConfigJob, or Kafka.
@@ -64,12 +64,12 @@ import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
  *        baseUrl = https://host:port
  *        allowedPaths = method+path entries parsed from ProductDTO.topic
  *        webClient = mTLS WebClient built from P12 keystore
- *   5. Starts a file watcher on the P12 keystore file — rebuilds WebClient
+ *   5. Starts a file watcher on the P12 keystore file - rebuilds WebClient
  *      automatically when the cert manager rotates the certificate.
  *      No restart required. No job cycle dependency.
  *
- * A call selects the target product by its (organisation, productName) — the two
- * labels a participant knows from getConsumerConfig — via {@link ProductKey}. The
+ * A call selects the target product by its (organisation, productName) - the two
+ * labels a participant knows from getConsumerConfig - via {@link ProductKey}. The
  * internal producer id, base URL and mTLS client are resolved from consumer config.
  *
  * Two usage patterns supported:
@@ -78,7 +78,7 @@ import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
  *     RestClient client = new RestClient();
  *     ProductKey key = new ProductKey("Elexon", "FMAR Asset Registration");
  *     String resp = client.get(key, "/api/v1/fmar/assets/1000000000001");
- *     // process exits — daemon watcher thread dies automatically
+ *     // process exits - daemon watcher thread dies automatically
  *
  *   LONG-LIVED (held by a long-running process):
  *     RestClient client = new RestClient(); // created once at startup
@@ -87,7 +87,7 @@ import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
  *     // cert rotation handled transparently
  *
  * Path authorisation:
- *   This client does NOT police request paths — it only does the plumbing
+ *   This client does NOT police request paths - it only does the plumbing
  *   (bootstrap/consumer config, mTLS, JWT, OCSP) and sends the call. The gateway
  *   ({@code DsiProductAuthorizationFilter}) is the authority: it enforces the
  *   product's allowed paths from producer config on every request, regardless of
@@ -95,14 +95,14 @@ import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
  *   {@code getRegistration(key).allowedPaths()} (from ConsumerConfigDTO.topic) and
  *   validate against it themselves.
  *
- * Configuration (all from existing common.configuration — no new properties):
- *   idp.keystore.path + password    — PKCS12 for mTLS + JWT signing
- *   idp.truststore.path + password  — JKS for verifying producer cert
- *   idp.auth.mode                   — private_key_jwt (recommended)
- *   management.node.base.url        — Management Node endpoint
+ * Configuration (all from existing common.configuration - no new properties):
+ *   idp.keystore.path + password    - PKCS12 for mTLS + JWT signing
+ *   idp.truststore.path + password  - JKS for verifying producer cert
+ *   idp.auth.mode                   - private_key_jwt (recommended)
+ *   management.node.base.url        - Management Node endpoint
  *
  * Optional (from client.properties, defaulted):
- *   federator.rest.read.timeout.seconds — HTTP read timeout (default 60)
+ *   federator.rest.read.timeout.seconds - HTTP read timeout (default 60)
  */
 @Slf4j
 public class RestClient {
@@ -124,7 +124,7 @@ public class RestClient {
     private final Duration        timeout;
     private final Properties      commonProps;
 
-    /** ProductKey(organisation, productName) → current registration (rebuilt on cert rotation) */
+    /** ProductKey(organisation, productName) -> current registration (rebuilt on cert rotation) */
     private final Map<ProductKey, ProductRegistration> registry = new ConcurrentHashMap<>();
     private final OcspClientVerificationService ocspService;
 
@@ -147,7 +147,7 @@ public class RestClient {
         // Bootstrap: fetch consumer config and populate registry
         bootstrap();
 
-        // Watch P12 file — rebuild WebClient when cert manager rotates cert
+        // Watch P12 file - rebuild WebClient when cert manager rotates cert
         startCertWatcher();
 
         log.info("RestClient initialised: {} REST product(s) registered", registry.size());
@@ -155,7 +155,7 @@ public class RestClient {
 
 
     /**
-     * Testing constructor — accepts pre-populated registry and pre-built
+     * Testing constructor - accepts pre-populated registry and pre-built
      * dependencies. No PropertyUtil, no Management Node, no SSL required.
      * Public so tests in any package can use it via subclassing.
      */
@@ -171,7 +171,7 @@ public class RestClient {
         // No bootstrap, no cert watcher in test constructor
     }
 
-    // ── Public API ────────────────────────────────────────────────────────────
+    // -- Public API ------------------------------------------------------------
 
     /**
      * Makes a GET call to the specified product and path.
@@ -239,14 +239,14 @@ public class RestClient {
             Object resp = spec
                     .retrieve()
                     .onStatus((HttpStatusCode s) -> s == HttpStatus.UNAUTHORIZED, r -> {
-                        log.warn("401 on {} {} — token may have expired", method, url);
+                        log.warn("401 on {} {} - token may have expired", method, url);
                         return r.createException();
                     })
                     .bodyToMono(Object.class)
                     .timeout(timeout)
                     .block();
             String result = resp != null ? resp.toString() : null;
-            log.info("{} {} → {}", method, url, result);
+            log.info("{} {} -> {}", method, url, result);
             return result;
         } catch (WebClientResponseException e) {
             span.recordException(e);
@@ -334,14 +334,14 @@ public class RestClient {
                     .bodyValue(jsonPayload != null ? jsonPayload : "{}")
                     .retrieve()
                     .onStatus((HttpStatusCode s) -> s == HttpStatus.UNAUTHORIZED, r -> {
-                        log.warn("401 on {} {} — token may have expired", method, url);
+                        log.warn("401 on {} {} - token may have expired", method, url);
                         return r.createException();
                     })
                     .bodyToMono(Object.class)
                     .timeout(timeout)
                     .block();
             String result = resp != null ? resp.toString() : null;
-            log.info("{} {} → {}", method, url, result);
+            log.info("{} {} -> {}", method, url, result);
             return result;
         } catch (WebClientResponseException e) {
             span.recordException(e);
@@ -380,13 +380,13 @@ public class RestClient {
         return Map.copyOf(registry);
     }
 
-    // ── Bootstrap — call Management Node at construction ─────────────────────
+    // -- Bootstrap - call Management Node at construction ---------------------
 
     protected void bootstrap() {
         // Span the bootstrap so the consumer-config fetch and registration logs carry a trace_id.
         Span span = TRACER.spanBuilder("RestClient.bootstrap").setSpanKind(SpanKind.CLIENT).startSpan();
         try (Scope scope = span.makeCurrent()) {
-            log.info("RestClient bootstrapping — fetching consumer config from Management Node");
+            log.info("RestClient bootstrapping - fetching consumer config from Management Node");
             ManagementNodeDataHandler handler = new ManagementNodeDataHandler(
                     () -> HttpClientFactoryUtils.createHttpClientWithMtls(commonProps),
                     ObjectMapperUtil.getInstance(),
@@ -398,7 +398,7 @@ public class RestClient {
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new IllegalStateException(
-                    "RestClient bootstrap failed — could not fetch consumer config: "
+                    "RestClient bootstrap failed - could not fetch consumer config: "
                             + e.getMessage(), e);
         } finally {
             span.end();
@@ -406,7 +406,7 @@ public class RestClient {
     }
 
     /**
-     * Protected — processes ConsumerConfigDTO to populate the registry.
+     * Protected - processes ConsumerConfigDTO to populate the registry.
      * Extracted from bootstrap() to allow unit testing without Management Node.
      */
     protected void processConfig(ConsumerConfigDTO config) {
@@ -427,7 +427,7 @@ public class RestClient {
                         + ":" + producer.getPort();
                 List<AllowedPath> paths = AllowedPath.parse(product.getTopic());
                 if (paths.isEmpty()) {
-                    log.warn("Skipping REST product '{}' — no usable allowed-path "
+                    log.warn("Skipping REST product '{}' - no usable allowed-path "
                             + "configuration in its topic field", product.getName());
                     continue;
                 }
@@ -451,17 +451,17 @@ public class RestClient {
     }
 
     /**
-     * Logs the full set of REST products this consumer is subscribed to — the
+     * Logs the full set of REST products this consumer is subscribed to - the
      * (organisation, productName) pairs a caller must use as a {@link ProductKey}.
      * Printed once after bootstrap so the available set is obvious in the logs.
      */
     private void logSubscriptions() {
         if (registry.isEmpty()) {
-            log.warn("RestClient: no REST products subscribed — getConsumerConfig returned no "
+            log.warn("RestClient: no REST products subscribed - getConsumerConfig returned no "
                     + "products of type 'rest'. No calls will resolve until a subscription exists.");
             return;
         }
-        log.info("RestClient subscriptions ({}) — call these via new ProductKey(organisation, productName):",
+        log.info("RestClient subscriptions ({}) - call these via new ProductKey(organisation, productName):",
                 registry.size());
         int i = 1;
         for (ProductKey k : registry.keySet()) {
@@ -472,7 +472,7 @@ public class RestClient {
     /** Human-readable list of the subscribed (organisation, productName) pairs, for error messages. */
     private String subscriptionsSummary() {
         if (registry.isEmpty()) {
-            return "(none — this consumer has no REST subscriptions)";
+            return "(none - this consumer has no REST subscriptions)";
         }
         StringBuilder sb = new StringBuilder();
         for (ProductKey k : registry.keySet()) {
@@ -485,12 +485,12 @@ public class RestClient {
         return sb.toString();
     }
 
-    // ── Certificate file watcher ──────────────────────────────────────────────
+    // -- Certificate file watcher ----------------------------------------------
 
     protected void startCertWatcher() {
         String keystorePath = commonProps.getProperty(KEYSTORE_PATH);
         if (keystorePath == null || keystorePath.isBlank()) {
-            log.warn("RestClient: idp.keystore.path not set — cert rotation watcher not started");
+            log.warn("RestClient: idp.keystore.path not set - cert rotation watcher not started");
             return;
         }
 
@@ -501,7 +501,7 @@ public class RestClient {
         Path parentDir = Paths.get(keystorePath).getParent();
         if (parentDir == null || !java.nio.file.Files.isDirectory(parentDir)) {
             log.info("RestClient: keystore directory '{}' not present (TLS likely sourced from "
-                    + "Vault) — file-based cert rotation watcher not started", parentDir);
+                    + "Vault) - file-based cert rotation watcher not started", parentDir);
             return;
         }
 
@@ -519,7 +519,7 @@ public class RestClient {
                     WatchKey key = watcher.take(); // blocks until file change
                     for (var event : key.pollEvents()) {
                         if (file.equals(event.context().toString())) {
-                            log.info("P12 file changed — rebuilding WebClient with new certificate");
+                            log.info("P12 file changed - rebuilding WebClient with new certificate");
                             WebClient newWebClient = buildWebClient();
                             // Replace WebClient in all registrations atomically
                             registry.replaceAll((pk, reg) ->
@@ -543,7 +543,7 @@ public class RestClient {
         watchThread.start();
     }
 
-    // ── Header handling ───────────────────────────────────────────────────────
+    // -- Header handling -------------------------------------------------------
 
     /**
      * Applies caller-supplied headers to a request spec. Authorization is owned by
@@ -555,19 +555,19 @@ public class RestClient {
         extraHeaders.forEach((name, value) -> {
             if (name == null || value == null) return;
             if (HttpHeaders.AUTHORIZATION.equalsIgnoreCase(name)) {
-                log.warn("Ignoring caller-supplied Authorization header — managed by RestClient");
+                log.warn("Ignoring caller-supplied Authorization header - managed by RestClient");
                 return;
             }
             spec.header(name, value);
         });
     }
 
-    // ── Path validation ───────────────────────────────────────────────────────
+    // -- Path validation -------------------------------------------------------
 
     /**
      * Resolves the product registration for a call and performs the client-side OCSP check.
      *
-     * <p>This client is responsible only for the plumbing — bootstrapping from consumer config,
+     * <p>This client is responsible only for the plumbing - bootstrapping from consumer config,
      * mTLS, JWT and OCSP. It deliberately does <em>not</em> validate the request path against the
      * product's allowed paths: that is the gateway's job ({@code DsiProductAuthorizationFilter}
      * enforces it authoritatively from the verified JWT and DSM config). An integrator that wants
@@ -579,7 +579,7 @@ public class RestClient {
     protected ProductRegistration resolve(ProductKey key) {
         ProductRegistration reg = registry.get(key);
         if (reg == null) {
-            log.warn("Product mismatch — requested organisation='{}', productName='{}', but this "
+            log.warn("Product mismatch - requested organisation='{}', productName='{}', but this "
                             + "consumer is not subscribed to it. Subscribed products ({}): {}. "
                             + "Check the organisation/product name against the subscriptions list "
                             + "logged at startup (they must match getConsumerConfig exactly).",
@@ -591,13 +591,13 @@ public class RestClient {
                             + "to this organisation's product?");
         }
 
-        // Client-side OCSP check — verify the producer certificate is not revoked
+        // Client-side OCSP check - verify the producer certificate is not revoked
         // before making any outbound call. Uses producerId from registry since
         // OCSP checks the producer's Keycloak certificate.
         OcspStatus ocspStatus = ocspService.verify(reg.producerId());
         if (ocspStatus != OcspStatus.ACTIVE) {
             throw new IllegalStateException(
-                    "Outbound call blocked — producer certificate OCSP status="
+                    "Outbound call blocked - producer certificate OCSP status="
                             + ocspStatus + " for " + key
                             + ". Call cancelled to prevent connection to a compromised DPN.");
         }
@@ -605,13 +605,13 @@ public class RestClient {
         return reg;
     }
 
-    // ── WebClient builder — reads fresh mTLS material on every call ──────────
+    // -- WebClient builder - reads fresh mTLS material on every call ----------
 
     protected WebClient buildWebClient() {
         try {
             // Same switch HttpClientFactoryUtils.createHttpClientWithMtls() uses:
             // when vault.tls.enabled=true the cert manager's Vault-stored material
-            // is used directly, in memory — there is no keystore file on disk for
+            // is used directly, in memory - there is no keystore file on disk for
             // this codepath, so falling through to the file-based branch below
             // would fail with "file not found" rather than a clear error.
             javax.net.ssl.SSLContext jdkContext;
@@ -623,14 +623,14 @@ public class RestClient {
                 String truststorePath = commonProps.getProperty(TRUSTSTORE_PATH);
                 String truststorePass = commonProps.getProperty(TRUSTSTORE_PASS);
 
-                // SSLUtils.createSSLContext() returns javax.net.ssl.SSLContext —
+                // SSLUtils.createSSLContext() returns javax.net.ssl.SSLContext -
                 // same call used by HttpClientFactoryUtils.createHttpClientWithMtls().
                 jdkContext = SSLUtils.createSSLContext(
                         keystorePath, keystorePass, truststorePath, truststorePass);
             }
 
             // Wrap it in JdkSslContext which implements io.netty.handler.ssl.SslContext
-            // — the type that SslContextSpec.sslContext(SslContext) accepts.
+            // - the type that SslContextSpec.sslContext(SslContext) accepts.
             io.netty.handler.ssl.SslContext nettySslContext =
                     new io.netty.handler.ssl.JdkSslContext(
                             jdkContext,
@@ -658,11 +658,11 @@ public class RestClient {
      * @param producerId   Keycloak client ID of the producer DPN (ProducerDTO.idpClientId)
      * @param productName  Human-readable product name from DSM (ProductDTO.name)
      * @param baseUrl      https://host:port
-     * @param allowedPaths method+path entries parsed from ProductDTO.topic — what
+     * @param allowedPaths method+path entries parsed from ProductDTO.topic - what
      *                     this product exposes. Validated client-side before each
      *                     call, and enforced again server-side by
      *                     DsiProductAuthorizationFilter.
-     * @param webClient    mTLS WebClient — rebuilt automatically on cert rotation
+     * @param webClient    mTLS WebClient - rebuilt automatically on cert rotation
      *                     by the file watcher thread.
      */
     public record ProductRegistration(
@@ -676,7 +676,7 @@ public class RestClient {
         /**
          * Optional client-side pre-check: does this product's allowed-path configuration permit
          * {@code method} on {@code path}? Lets an integrator fail fast, before a round-trip, instead
-         * of receiving a 403 from the gateway. Purely advisory — the gateway enforces the same rule
+         * of receiving a 403 from the gateway. Purely advisory - the gateway enforces the same rule
          * authoritatively regardless. Any query string on {@code path} is ignored (paths are matched
          * on the path only), using the same {@link org.springframework.util.AntPathMatcher} semantics
          * (URI templates like {@code {id}} and Ant wildcards {@code *}/{@code **}) the gateway uses.

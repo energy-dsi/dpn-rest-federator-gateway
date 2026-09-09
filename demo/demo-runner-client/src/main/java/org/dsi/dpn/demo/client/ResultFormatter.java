@@ -15,8 +15,8 @@ import com.fasterxml.jackson.databind.ObjectWriter;
 final class ResultFormatter {
 
     private static final int WIDTH = 78;
-    private static final String BORDER = "═".repeat(WIDTH);
-    private static final String THIN   = "─".repeat(WIDTH);
+    private static final String BORDER = "=".repeat(WIDTH);
+    private static final String THIN   = "-".repeat(WIDTH);
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final ObjectWriter prettyWriter = mapper.writerWithDefaultPrettyPrinter();
@@ -31,7 +31,7 @@ final class ResultFormatter {
     /** Section heading for a demo step. */
     String step(int number, String title) {
         return "\n" + BORDER
-                + "\n  STEP " + number + " — " + title
+                + "\n  STEP " + number + " - " + title
                 + "\n" + BORDER;
     }
 
@@ -84,7 +84,7 @@ final class ResultFormatter {
 
     /**
      * Pretty-prints a JSON string. Bodies that are not valid JSON (or are empty)
-     * are returned as-is rather than failing the run — the point is to show the
+     * are returned as-is rather than failing the run - the point is to show the
      * result, whatever shape it arrived in.
      */
     String prettyPrint(String body) {
