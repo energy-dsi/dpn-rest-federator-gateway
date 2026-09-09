@@ -6,7 +6,6 @@ import io.swagger.v3.oas.annotations.OpenAPIDefinition;
 import io.swagger.v3.oas.annotations.info.Info;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-import org.dsi.dpn.common.service.secret.VaultFileBasedSslBundleInitializer;
 import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 
 /**
@@ -17,6 +16,14 @@ import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
  * registration) plus Swagger UI at {@code /swagger-ui.html}. Authenticates
  * callers with a shared API key; it has no knowledge of the DPN's mTLS/JWT
  * trust chain, which the gateway handles before forwarding here.
+ *
+ * <p><b>TLS:</b> this backend stands in for a participant's own data service and
+ * does NOT talk to the DPN Vault. Its inbound HTTPS listener terminates with the
+ * {@code keystore.jks} from the mounted {@code dpn-tls} platform secret (a plain
+ * {@code spring.ssl.bundle.jks.demo-runner-tls.*} bundle in application.properties).
+ * The gateway trusts that certificate with the same DPN truststore it uses to
+ * trust Vault's HTTPS calls — so, from the gateway's point of view, calling this
+ * backend works exactly like calling the Vault service.
  */
 @SpringBootApplication
 @OpenAPIDefinition(info = @Info(
@@ -26,17 +33,8 @@ import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
                 + "specification (GET /assets, POST /fsp/{fspId}/assets). "
                 + "Illustrative only - data is held in memory."))
 public class DemoRunnerServerApplication {
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
         OpenTelemetryConfig.initialize();
-
-        // Sources this app's inbound HTTPS listener from Vault via a real,
-        // file-based SSL bundle - see VaultFileBasedSslBundleInitializer's
-        // own javadoc for why the file-based approach is used instead of the
-        // in-memory SslBundleRegistrar this project used previously. Must run
-        // before SpringApplication.run() so the properties it sets are already
-        // present in the Environment when Spring resolves server.ssl.bundle.
-        VaultFileBasedSslBundleInitializer.initialise("demo-runner-tls");
-
         SpringApplication.run(DemoRunnerServerApplication.class, args);
     }
 }

@@ -40,9 +40,10 @@
 
 
     <dependencies>
-        <!-- VaultSslBundleRegistrar + OpenTelemetry telemetry, shared with the gateway
-             so this demo backend can terminate HTTPS with the same Vault-issued
-             certificate and emit the same traces/spans. -->
+        <!-- OpenTelemetry telemetry (OpenTelemetryConfig) shared with the gateway,
+             so this demo backend emits the same traces/spans. It does NOT use
+             common's Vault support: its HTTPS listener terminates with keystore.jks
+             from the mounted dpn-tls platform secret, not from Vault. -->
         <dependency>
             <groupId>org.dsi.dpn</groupId>
             <artifactId>rest-federator-common</artifactId>
@@ -108,13 +109,12 @@
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
                 <configuration>
-                    <!-- Exclude Spring bootstrap/wiring (main class + @Configuration) from the
-                         coverage metric; these load PropertyUtil/Vault at startup and are
+                    <!-- Exclude the Spring bootstrap main class from the coverage metric;
+                         it wires OpenTelemetry + SpringApplication.run at startup and is
                          exercised at deploy time, not by unit tests. Controllers, store,
                          model and exception handling stay measured. -->
                     <excludes>
                         <exclude>**/DemoRunnerServerApplication.class</exclude>
-                        <exclude>**/config/DemoRunnerServerConfig.class</exclude>
                     </excludes>
                 </configuration>
                 <executions>
