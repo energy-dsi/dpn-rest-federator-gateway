@@ -28,8 +28,10 @@ import org.dsi.dpn.common.utils.SSLUtils;
  *
  * Calls GET /api/v1/certificate/ocsp?clientId={clientId} on the Management Node.
  * Uses the same mTLS HttpClient pattern as OcspCertificateVerificationServiceImpl
- * in the gRPC Federator. Uses a truststore-only SSL context (no client key needed
- * for this outbound call - Management Node accepts the server's existing cert).
+ * in the gRPC Federator ({@code HttpClientFactoryUtils.createHttpClientWithMtls}),
+ * presenting this gateway's own identity certificate - matching the client
+ * construction already used for the working producer-config calls, since
+ * Management Node's edge gateway requires mTLS.
  *
  * The gRPC OcspServerInterceptor passed an empty string as clientId - this
  * implementation fixes that by always passing the actual consumer clientId
@@ -39,15 +41,11 @@ import org.dsi.dpn.common.utils.SSLUtils;
  *
  * Properties read from common.configuration (already loaded by server):
  *   management.node.base.url   - Management Node base URL
- *   idp.truststore.path        - JKS for verifying Management Node TLS cert
- *   idp.truststore.password
  */
 @Slf4j
 public class OcspVerificationServiceImpl implements OcspVerificationService {
 
     private static final String MN_BASE_URL_PROP     = "management.node.base.url";
-    private static final String TRUSTSTORE_PATH_PROP = "idp.truststore.path";
-    private static final String TRUSTSTORE_PASS_PROP = "idp.truststore.password";
     private static final String OCSP_PATH            = "/api/v1/certificate/ocsp";
 
     private static final Tracer TRACER =
@@ -153,30 +151,17 @@ public class OcspVerificationServiceImpl implements OcspVerificationService {
 
     /**
      * Protected for testing - allows injection of a mock HttpClient.
-     * In production, returns a real HttpClient with mTLS truststore.
+     *
+     * <p>Uses the same mTLS client construction as {@code ManagementNodeDataHandler}'s
+     * producer-config calls ({@link org.dsi.dpn.common.utils.HttpClientFactoryUtils
+     * #createHttpClientWithMtls}), presenting this gateway's own identity certificate to
+     * Management Node. The OCSP call previously used a truststore-only (server-auth-only)
+     * SSL context, omitting the client certificate - which the edge gateway in front of
+     * Management Node rejects with HTTP 400 before the request ever reaches
+     * {@code CertificateController}, since the same edge gateway requires mTLS for the
+     * producer-config calls that do work.
      */
     protected java.net.http.HttpClient buildHttpClient(java.util.Properties props) {
-        try {
-            javax.net.ssl.SSLContext sslCtx;
-            // Same switch HttpClientFactoryUtils.createHttpClientWithMtls() uses:
-            // when vault.tls.enabled=true there is no truststore file on disk -
-            // the cert manager's material lives only in Vault.
-            if (org.dsi.dpn.common.service.secret.VaultTlsSupport.isVaultTlsEnabled()) {
-                sslCtx = javax.net.ssl.SSLContext.getInstance("TLS");
-                sslCtx.init(null, org.dsi.dpn.common.service.secret.VaultTlsSupport.trustManagers(), null);
-            } else {
-                sslCtx = org.dsi.dpn.common.utils.SSLUtils
-                        .createSSLContextWithTrustStore(
-                                props.getProperty("idp.truststore.path"),
-                                props.getProperty("idp.truststore.password"));
-            }
-            return HttpClient.newBuilder()
-                    .version(HttpClient.Version.HTTP_1_1)
-                    .connectTimeout(Duration.ofSeconds(5))
-                    .sslContext(sslCtx)
-                    .build();
-        } catch (Exception e) {
-            throw new org.dsi.dpn.common.exception.FederatorSslException("Failed to build OCSP HttpClient", e);
-        }
+        return org.dsi.dpn.common.utils.HttpClientFactoryUtils.createHttpClientWithMtls(props);
     }
 }
