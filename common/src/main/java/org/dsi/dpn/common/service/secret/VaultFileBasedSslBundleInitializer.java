@@ -87,23 +87,39 @@ public final class VaultFileBasedSslBundleInitializer {
         keystorePath.toFile().deleteOnExit();
         truststorePath.toFile().deleteOnExit();
 
+        // Generated ONCE here and reused for every subsequent reload (see the
+        // password parameter threaded through writeFiles()/scheduleReload()/
+        // reloadSafely() below). Spring binds the keystore password into its
+        // SslBundle a single time, at startup, from the System property set
+        // below - it never re-reads that property afterward. If each reload
+        // generated a fresh password (the original, buggy behaviour), the file
+        // would end up re-encrypted with a password Spring no longer knows,
+        // and its own reload-on-update file-watcher would fail to decrypt it
+        // (BadPaddingException) on the very first scheduled reload. Keeping the
+        // password fixed for the whole lifetime of this bundle avoids that
+        // entirely - only the certificate/key *inside* the file ever changes.
+        char[] password = ephemeralPassword();
+
         // Static path/alias properties (location, type, alias) only need setting
         // once - they never change between reloads, only the file *contents* do.
-        configureStaticProperties(bundleName, alias, keystorePath, truststorePath);
-        writeFiles(bundleName, basePath, alias, keystorePath, truststorePath);
+        configureStaticProperties(bundleName, alias, keystorePath, truststorePath, password);
+        writeFiles(basePath, alias, keystorePath, truststorePath, password);
         log.info("Wrote Vault cert to temp files, configured file-based '{}' bundle at {}", bundleName, tempDir);
 
-        scheduleReload(bundleName, basePath, alias, keystorePath, truststorePath);
+        scheduleReload(bundleName, basePath, alias, keystorePath, truststorePath, password);
     }
 
     private static void configureStaticProperties(
-            String bundleName, String alias, Path keystorePath, Path truststorePath) {
+            String bundleName, String alias, Path keystorePath, Path truststorePath, char[] password) {
         String prefix = "spring.ssl.bundle.jks." + bundleName;
         System.setProperty(prefix + ".key.alias", alias);
         System.setProperty(prefix + ".keystore.location", "file:" + keystorePath.toAbsolutePath());
         System.setProperty(prefix + ".keystore.type", "PKCS12");
         System.setProperty(prefix + ".truststore.location", "file:" + truststorePath.toAbsolutePath());
         System.setProperty(prefix + ".truststore.type", "PKCS12");
+        // Fixed for the bundle's whole lifetime - see the comment in initialise().
+        System.setProperty(prefix + ".keystore.password", new String(password));
+        System.setProperty(prefix + ".truststore.password", new String(password));
         // Enables Spring Boot's own file-watching so rewriting the same files below
         // (on reload) is picked up automatically, hot-swapping the connector's
         // certificate with no restart. Property name could not be verified against
@@ -114,11 +130,10 @@ public final class VaultFileBasedSslBundleInitializer {
     }
 
     private static void writeFiles(
-            String bundleName, String basePath, String alias, Path keystorePath, Path truststorePath)
+            String basePath, String alias, Path keystorePath, Path truststorePath, char[] password)
             throws Exception {
         Properties common = commonConfig();
         SecretProvider provider = PropertyUtil.createSecretProvider(common);
-        char[] password = ephemeralPassword();
 
         KeyStore identity = VaultKeystoreProvider.buildIdentityKeyStore(provider, basePath, alias, password);
         KeyStore trust = VaultKeystoreProvider.buildTrustStore(provider, basePath, password);
@@ -129,18 +144,14 @@ public final class VaultFileBasedSslBundleInitializer {
         try (OutputStream os = Files.newOutputStream(truststorePath)) {
             trust.store(os, password);
         }
-
-        // Password can legitimately change on every reload (a fresh random value
-        // each time) since only the file's own header stores it - updating this
-        // property keeps it in sync for the next time Spring (re)reads the file.
-        String pw = new String(password);
-        String prefix = "spring.ssl.bundle.jks." + bundleName;
-        System.setProperty(prefix + ".keystore.password", pw);
-        System.setProperty(prefix + ".truststore.password", pw);
+        // Password is fixed for this bundle's lifetime (see initialise()) - no
+        // System property update needed here on reload; it was already set once,
+        // correctly, when the bundle was first configured.
     }
 
     private static void scheduleReload(
-            String bundleName, String basePath, String alias, Path keystorePath, Path truststorePath) {
+            String bundleName, String basePath, String alias, Path keystorePath, Path truststorePath,
+            char[] password) {
         long intervalSeconds = parseIntervalSeconds();
         if (intervalSeconds <= 0) {
             log.info("'{}' SSL bundle hot-reload is disabled ({}={})",
@@ -154,15 +165,16 @@ public final class VaultFileBasedSslBundleInitializer {
         };
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(daemonFactory);
         scheduler.scheduleAtFixedRate(
-                () -> reloadSafely(bundleName, basePath, alias, keystorePath, truststorePath),
+                () -> reloadSafely(bundleName, basePath, alias, keystorePath, truststorePath, password),
                 intervalSeconds, intervalSeconds, TimeUnit.SECONDS);
         log.info("Scheduled '{}' SSL bundle file hot-reload every {} seconds", bundleName, intervalSeconds);
     }
 
     private static void reloadSafely(
-            String bundleName, String basePath, String alias, Path keystorePath, Path truststorePath) {
+            String bundleName, String basePath, String alias, Path keystorePath, Path truststorePath,
+            char[] password) {
         try {
-            writeFiles(bundleName, basePath, alias, keystorePath, truststorePath);
+            writeFiles(basePath, alias, keystorePath, truststorePath, password);
             log.info("Reloaded '{}' SSL bundle files from Vault", bundleName);
         } catch (Exception e) {
             log.warn("Failed to reload '{}' SSL bundle files from Vault - keeping previously written material: {}",
