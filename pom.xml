@@ -95,9 +95,16 @@
 
             spring-security   7.0.0 -> CVE-2026-40993 (fixed <=7.0.5),
                                         CVE-2026-22746 (fixed <=7.0.4), plus others
-                                        -> 7.0.6 clears all CVEs found in this scan
+                                        -> further bumped to 7.0.7 on 12 Sep 2026 per a
+                                        follow-up scan finding CVE-2026-41707 (DPoP replay),
+                                        CVE-2026-47842 (null IV), CVE-2026-59276 (timing
+                                        attack via String.equals()), all affecting <=7.0.6
             tomcat             11.0.14 -> CVE-2026-53434/55276/55955 and 9 others,
-                                        all fixed in 11.0.23
+                                        first fixed in 11.0.23, then further bumped to
+                                        11.0.25 on 12 Sep 2026 per a JFrog container scan
+                                        finding 11 more Critical/High CVEs
+                                        (68525/65905/65182/65637/59084/59083/68763/68569/
+                                        66422/65927/65183) against 11.0.23 specifically
 
             jackson: NOT handled via a property here. A first attempt used a
             jackson-bom.version property set to 2.21.5, assuming it governed
@@ -110,8 +117,8 @@
             dependency, in the dependencyManagement block below - see the
             comment there for the CVE detail and target versions.
         -->
-        <spring-security.version>7.0.6</spring-security.version>
-        <tomcat.version>11.0.23</tomcat.version>
+        <spring-security.version>7.0.7</spring-security.version>
+        <tomcat.version>11.0.25</tomcat.version>
         <!--
             Continuing the same pattern above - remaining Critical/High CVEs
             from the same 10 Sep 2026 Checkmarx scan, all resolved by version
@@ -133,6 +140,33 @@
         <netty.version>4.2.17.Final</netty.version>
         <micrometer.version>1.16.6</micrometer.version>
         <logback.version>1.5.37</logback.version>
+        <!--
+            Added 12 Sep 2026, per a fresh Checkmarx SCA scan surfacing two
+            more Java dependencies not covered by any override above:
+
+            reactor-netty 1.3.6 -> CVE-2026-47845 (incorrect remote IP under
+                                    HAProxy Protocol), CVE-2026-47874 (memory
+                                    exhaustion via HTTP/1.1 pipelining),
+                                    CVE-2026-47844 (exception detail leak
+                                    across requests), CVE-2026-47843 (DNS
+                                    resolver reuse across clients). Advisories
+                                    confirm versions 1.3.0-1.3.6 affected but
+                                    do not state an explicit fixed version;
+                                    1.3.7 is the logical next patch and has
+                                    NOT been independently verified against a
+                                    live Maven repository from this
+                                    environment. CONFIRM this version exists
+                                    and resolves via `mvn dependency:tree |
+                                    grep reactor-netty` before relying on it.
+
+            log4j-api     2.25.4 -> CVE-2026-49844 (non-finite floating-point
+                                    values produce invalid JSON in
+                                    MapMessage.asJson(), only reachable via
+                                    JsonTemplateLayout's message resolver).
+                                    Advisory names 2.25.5 or 2.26.1 as fixed.
+        -->
+        <reactor-netty.version>1.3.7</reactor-netty.version>
+        <log4j2.version>2.25.5</log4j2.version>
         <jacoco.version>0.8.11</jacoco.version>
         <!-- Vendored plumbing (see common/VENDORED.md) -->
         <nimbus.version>10.4.2</nimbus.version>
@@ -193,12 +227,16 @@
                 avoids relying on a property name/behaviour that could not be
                 confirmed from this environment (no live Maven Central access).
 
-                tools.jackson.core (3.x)          3.0.2  -> 3.2.1
-                com.fasterxml.jackson.core (2.x)  2.20.1 -> 2.21.5
-                Both clear CVE-2026-77310 (DNS-based SSRF via eager
-                InetAddress resolution) and CVE-2026-59888 (@JsonIgnore
-                bypass on Records), found against the respective old versions
-                in the 10 Sep 2026 Checkmarx scan.
+                tools.jackson.core (3.x)          3.0.2  -> 3.2.2
+                com.fasterxml.jackson.core (2.x)  2.20.1 -> 2.21.6
+                Original bump (2.21.5 / 3.2.1) cleared CVE-2026-77310 and
+                CVE-2026-59888. A follow-up Checkmarx scan on 12 Sep 2026
+                found CVE-2026-68497 (BigInteger/BigDecimal quadratic-time
+                parsing DoS via XML datatype deserializers) newly disclosed
+                against those exact versions, plus CVE-2026-19032
+                (unrestricted URI scheme in java.nio.file.Path deserializer)
+                recurring on the 3.x line specifically. 2.21.6 / 3.2.2 are
+                the versions the advisory names as fixed for both.
 
                 CONFIRM via `mvn dependency:tree | grep -i jackson` after
                 building - both lines should show only these two versions,
@@ -207,22 +245,49 @@
             <dependency>
                 <groupId>tools.jackson.core</groupId>
                 <artifactId>jackson-databind</artifactId>
-                <version>3.2.1</version>
+                <version>3.2.2</version>
             </dependency>
             <dependency>
                 <groupId>tools.jackson.core</groupId>
                 <artifactId>jackson-core</artifactId>
-                <version>3.2.1</version>
+                <version>3.2.2</version>
             </dependency>
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-databind</artifactId>
-                <version>2.21.5</version>
+                <version>2.21.6</version>
             </dependency>
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
                 <artifactId>jackson-core</artifactId>
-                <version>2.21.5</version>
+                <version>2.21.6</version>
+            </dependency>
+            <!--
+                REVERTED 15 Sep 2026: an attempt to pin jackson-annotations
+                to 2.21.6 (matching jackson-databind) failed an actual build -
+                that version does not exist on Maven Central. jackson-annotations
+                follows its own, independent version numbering from
+                jackson-databind/-core; it is NOT safe to assume they share a
+                version number.
+
+                RE-ADDED 15 Sep 2026, this time with the actual, verified
+                version. `mvn dependency:tree -Dverbose` confirmed the real
+                conflict: tools.jackson.core:jackson-databind:3.2.2 (the 3.x
+                line, used internally by spring-boot-starter-jackson) itself
+                requires jackson-annotations:2.22, but our own
+                com.fasterxml.jackson.core:jackson-databind:2.21.6 pin (the
+                2.x line) requires jackson-annotations:2.21, and Maven's
+                nearest-wins mediation silently picked 2.21 - one version
+                short of the JsonApplyView class 3.x's databind needs at
+                runtime, causing java.lang.NoClassDefFoundError seen in local
+                testing. Pinning to 2.22 here (the exact version confirmed in
+                the verbose tree output, not guessed) satisfies both lines,
+                since 2.22 is newer than what the 2.x line itself asks for.
+            -->
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-annotations</artifactId>
+                <version>2.22</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
