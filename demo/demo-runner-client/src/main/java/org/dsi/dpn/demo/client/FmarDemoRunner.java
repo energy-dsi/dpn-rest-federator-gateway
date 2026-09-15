@@ -55,6 +55,7 @@ public class FmarDemoRunner {
 
     private static final String ASSETS_PATH = "/api/v1/fmar/assets";
     private static final String FSP_PATH_PREFIX = "/api/v1/fmar/fsp/";
+    private static final String STEP6_MISSING_FIELD = "assetName";
 
     private final DemoParameters params;
     private final RestClient restClient;
@@ -274,14 +275,17 @@ public class FmarDemoRunner {
      * the normal registration flow in steps 2-4 is unaffected.
      */
     private void step6InvalidPayload(ProductKey key, String path) {
-        log.info(fmt.step(6, "Register with an invalid payload - missing required field (expect rejection)"));
+        log.info(fmt.step(6, "Register with an invalid payload - missing required field '"
+                + STEP6_MISSING_FIELD + "' (expect rejection)"));
         try {
             String body = restClient.post(
                     key, path, invalidRegistrationPayload(), senderHeaders(false));
             log.warn(fmt.failure("POST", path,
-                    "Expected the backend to reject this payload but the request succeeded: " + body));
+                    "Expected the backend to reject this payload (missing required field '"
+                            + STEP6_MISSING_FIELD + "') but the request succeeded: " + body));
         } catch (Exception e) {
-            log.info(fmt.expected("POST", path, "BAD REQUEST - invalid payload rejected", rootMessage(e)));
+            log.info(fmt.expected("POST", path,
+                    "BAD REQUEST - missing required field '" + STEP6_MISSING_FIELD + "'", rootMessage(e)));
         }
     }
 
