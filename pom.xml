@@ -245,26 +245,37 @@
             <!--
                 UPDATED 23 Sep 2026 per fresh Checkmarx SAST/SCA re-scan (report
                 cx_result__17_.pdf): CVE-2026-91776/91777 newly disclosed against
-                the exact versions pinned below (3.2.2 / 2.21.6). Advisory text
-                names 2.18.11, 2.21.7, and 2.22.3 as fixed for the 2.x-numbered
-                releases it lists - the 3.x line's own equivalent fixed version
-                could NOT be confirmed from this environment (no live Maven
-                Central access) and is left at 3.2.2 pending that check. CONFIRM
-                via `mvn dependency:tree | grep -i jackson` after building, and
-                via the advisory's own CVE page, before relying on either value -
-                this project has hit real jackson-databind/jackson-annotations
-                cross-version conflicts before (see the jackson-annotations pin
-                below), so verify rather than assume this resolves cleanly.
+                the exact versions pinned below (3.2.2 / 2.21.6). The com.fasterxml
+                (2.x) line was bumped immediately below to 2.21.7 - the fixed
+                version the advisory explicitly names.
+
+                CONFIRMED 24 Sep 2026 per a follow-up re-scan (report
+                cx_result__18_.pdf) that both CVEs were still open against THIS
+                (tools.jackson.core, 3.x) line specifically, still at 3.2.2 - the
+                2.x bump above did not cover it, since these are two independently
+                versioned Jackson lines. The full advisory text (visible in this
+                second report, not the first) explicitly names the fix: "fixed in
+                versions 2.18.11, 2.21.7, and 2.22.3 of com.fasterxml.jackson.core
+                :jackson-databind, and in versions 3.1.7 and 3.2.3 of
+                tools.jackson.core:jackson-databind." 3.2.3 is the correct target
+                here (staying on the 3.2.x branch we are already on; 3.1.7 is the
+                fix for the older, unrelated 3.1.x branch).
+
+                CONFIRM via `mvn dependency:tree | grep -i jackson` after
+                building - this project has hit real jackson-databind/
+                jackson-annotations cross-version conflicts before (see the
+                jackson-annotations pin below), so verify rather than assume
+                this resolves cleanly.
             -->
             <dependency>
                 <groupId>tools.jackson.core</groupId>
                 <artifactId>jackson-databind</artifactId>
-                <version>3.2.2</version>
+                <version>3.2.3</version>
             </dependency>
             <dependency>
                 <groupId>tools.jackson.core</groupId>
                 <artifactId>jackson-core</artifactId>
-                <version>3.2.2</version>
+                <version>3.2.3</version>
             </dependency>
             <dependency>
                 <groupId>com.fasterxml.jackson.core</groupId>
