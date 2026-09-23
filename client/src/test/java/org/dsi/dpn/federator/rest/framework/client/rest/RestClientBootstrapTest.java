@@ -185,11 +185,26 @@ class RestClientBootstrapTest {
                 tempDir.resolve("no-such-subdir").resolve("keystore.p12").toString());
         f.set(client, props);
 
+        // Thread.getAllStackTraces() returns EVERY thread alive in the whole JVM, not just
+        // ones this test started - Surefire runs many test classes in one JVM (no
+        // fork-per-method), and other tests in this file (e.g. startCertWatcher_startsThread,
+        // RestClientCertWatcherRealTest) genuinely start real daemon threads with this same
+        // name, which outlive their own test method. JUnit does not guarantee source-order
+        // execution, so on a run where one of those executes first, its still-alive thread would
+        // make a plain "does any thread with this name exist" check pass here even though this
+        // call to startCertWatcher() did nothing - snapshotting thread identities before/after
+        // and checking for a genuinely NEW one avoids that cross-test pollution entirely.
+        java.util.Set<Long> watcherThreadIdsBefore = Thread.getAllStackTraces().keySet().stream()
+                .filter(t -> "rest-client-cert-watcher".equals(t.getName()))
+                .map(Thread::threadId)
+                .collect(java.util.stream.Collectors.toSet());
+
         client.startCertWatcher();
 
-        boolean started = Thread.getAllStackTraces().keySet().stream()
-                .anyMatch(t -> "rest-client-cert-watcher".equals(t.getName()));
-        assertThat(started).isFalse();
+        boolean startedNewWatcherThread = Thread.getAllStackTraces().keySet().stream()
+                .filter(t -> "rest-client-cert-watcher".equals(t.getName()))
+                .anyMatch(t -> !watcherThreadIdsBefore.contains(t.threadId()));
+        assertThat(startedNewWatcherThread).isFalse();
     }
 
     @Test @DisplayName("startCertWatcher() starts daemon thread for valid path")
