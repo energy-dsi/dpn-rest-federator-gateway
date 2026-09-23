@@ -89,4 +89,31 @@ public class IdpTokenServiceFactory {
             }
         };
     }
+
+    /**
+     * Builds a dedicated {@link IdpTokenService} for gating Redis access behind a valid
+     * Keycloak session ({@code KeycloakSessionGuard}), completely separate from the main
+     * IDP client built by {@link #createIdpTokenService()}. Reads the {@code redis.idp.}
+     * prefix from the same common-configuration.properties file - no second properties
+     * file is used. Matches the sibling gRPC federator's
+     * {@code GRPCUtils.createRedisIdpTokenService()}.
+     * <p>
+     * Always uses client_secret authentication (the redis.idp. client is not expected to
+     * need private_key_jwt/mTLS - if that changes, extend this the same way
+     * {@link #createIdpTokenService()} branches on {@code idp.auth.mode}).
+     * </p>
+     */
+    public static IdpTokenService createRedisIdpTokenService() {
+        Properties properties = PropertyUtil.getPropertiesFromFilePath(COMMON_CONFIG_PROPERTIES);
+
+        ObjectMapper mapper = ObjectMapperUtil.getInstance();
+
+        SecretProvider secretProvider = PropertyUtil.createSecretProvider(properties);
+        PropertyUtil.overrideWithSecrets(properties, secretProvider);
+
+        LOGGER.info("Redis-gating IDP token service using dedicated Keycloak client "
+                + "(client_secret, prefix='redis.idp.')");
+        Supplier<HttpClient> clientSupplier = () -> HttpClientFactoryUtils.createHttpClient(properties, "redis.idp.");
+        return new IdpTokenServiceClientSecretImpl(clientSupplier, mapper, "redis.idp.");
+    }
 }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package org.dsi.dpn.federator.rest.framework.server.proxy;
 
+import jakarta.servlet.http.HttpServletRequest;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.BeforeEach;
@@ -77,6 +78,24 @@ class BackendProxyControllerTest {
                 .isEqualTo(URI.create(BASE_URL + "/assets"));
     }
 
+    @Test @DisplayName("buildTargetUrl() works when the configured backend has no explicit port (http default)")
+    void buildTargetUrl_httpNoExplicitPort() {
+        BackendProxyController c = new BackendProxyController(
+                restTemplate, new BackendProperties("http://demo-runner-server", API_KEY));
+
+        assertThat(c.buildTargetUrl(request("GET", "/assets", null)))
+                .isEqualTo(URI.create("http://demo-runner-server/assets"));
+    }
+
+    @Test @DisplayName("buildTargetUrl() works when the configured backend has no explicit port (https default)")
+    void buildTargetUrl_httpsNoExplicitPort() {
+        BackendProxyController c = new BackendProxyController(
+                restTemplate, new BackendProperties("https://demo-runner-server", API_KEY));
+
+        assertThat(c.buildTargetUrl(request("GET", "/assets", null)))
+                .isEqualTo(URI.create("https://demo-runner-server/assets"));
+    }
+
     // -- Header handling -------------------------------------------------------
 
     @Test @DisplayName("Forwards caller headers but not Authorization or Host")
@@ -96,6 +115,16 @@ class BackendProxyControllerTest {
         assertThat(headers.containsHeader("Authorization")).isFalse();
         assertThat(headers.containsHeader("Host")).isFalse();
         assertThat(headers.containsHeader("Connection")).isFalse();
+    }
+
+    @Test @DisplayName("copyRequestHeaders() tolerates a null header-name enumeration")
+    void copyRequestHeaders_nullHeaderNames() {
+        HttpServletRequest req = mock(HttpServletRequest.class);
+        when(req.getHeaderNames()).thenReturn(null);
+
+        HttpHeaders headers = controller.copyRequestHeaders(req);
+
+        assertThat(headers.isEmpty()).isTrue();
     }
 
     @Test @DisplayName("filterResponseHeaders() drops connection-scoped headers")
@@ -166,6 +195,24 @@ class BackendProxyControllerTest {
                 request("GET", "/assets", null), null);
 
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_GATEWAY);
+    }
+
+    @Test @DisplayName("Forwards without an API key header when none is configured, and warns")
+    void forward_noApiKeyConfigured() {
+        BackendProxyController c = new BackendProxyController(
+                restTemplate, new BackendProperties(BASE_URL, null));
+        when(restTemplate.exchange(any(URI.class), eq(HttpMethod.GET),
+                any(HttpEntity.class), eq(byte[].class)))
+                .thenReturn(ResponseEntity.ok("body".getBytes(StandardCharsets.UTF_8)));
+
+        ResponseEntity<byte[]> resp = c.forward(request("GET", "/assets", null), null);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        var captor = forClass(HttpEntity.class);
+        verify(restTemplate).exchange(any(URI.class), eq(HttpMethod.GET),
+                captor.capture(), eq(byte[].class));
+        assertThat(((HttpEntity<?>) captor.getValue()).getHeaders()
+                .containsHeader(BackendProperties.API_KEY_HEADER)).isFalse();
     }
 
     @Test @DisplayName("An unconfigured backend URL yields 503")

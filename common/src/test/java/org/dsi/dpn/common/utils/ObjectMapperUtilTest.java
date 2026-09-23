@@ -3,12 +3,21 @@
 package org.dsi.dpn.common.utils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 class ObjectMapperUtilTest {
+
+    @Test @DisplayName("ObjectMapperUtil cannot be instantiated")
+    void constructor_throwsUnsupportedOperationException() throws Exception {
+        var constructor = ObjectMapperUtil.class.getDeclaredConstructor();
+        constructor.setAccessible(true);
+
+        assertThatThrownBy(constructor::newInstance).hasCauseInstanceOf(UnsupportedOperationException.class);
+    }
 
     @Test @DisplayName("getInstance returns a shared, non-null ObjectMapper")
     void singleton() {

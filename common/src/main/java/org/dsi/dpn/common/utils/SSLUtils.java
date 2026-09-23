@@ -162,10 +162,10 @@ public class SSLUtils {
     /**
      * Creates TrustManagers from a JKS file.
      *
-     * @param trustStoreFilePath the path to the JKS truststore file
+     * @param trustStoreFilePath the path to the truststore file (JKS or PKCS12 format, auto-detected)
      * @param trustStorePassword the password for the truststore
      * @return an array of TrustManagers
-     * @throws FederatorSslException if the file is not found or cannot be loaded
+     * @throws FederatorSslException if the file is not found, or cannot be loaded as either format
      */
     public static TrustManager[] createTrustManager(String trustStoreFilePath, String trustStorePassword) {
         try (InputStream inputStream = new FileInputStream(trustStoreFilePath)) {
@@ -176,26 +176,51 @@ public class SSLUtils {
     }
 
     /**
-     * Creates TrustManagers from a JKS input stream.
+     * Creates TrustManagers from a truststore file, auto-detecting whether its actual on-disk
+     * format is JKS or PKCS12 (see {@link #loadTrustStore}).
      *
-     * @param trustStoreInputStream the input stream of the JKS truststore file
+     * @param trustStoreInputStream the input stream of the truststore file
      * @param trustStorePassword    the password for the truststore
      * @return an array of TrustManagers
-     * @throws FederatorSslException if the input stream is null or cannot be loaded
+     * @throws FederatorSslException if the input stream is null, or cannot be loaded as either format
      */
     public static TrustManager[] createTrustManager(InputStream trustStoreInputStream, String trustStorePassword) {
         if (trustStoreInputStream == null || trustStorePassword == null) {
             throw new FederatorSslException("Trust store input stream or password is not set.");
         }
         try {
-            KeyStore trustStore = KeyStore.getInstance(KEYSTORE_TYPE_JKS);
-            trustStore.load(trustStoreInputStream, trustStorePassword.toCharArray());
+            byte[] bytes = trustStoreInputStream.readAllBytes();
+            KeyStore trustStore = loadTrustStore(bytes, trustStorePassword);
             TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
             tmf.init(trustStore);
             return tmf.getTrustManagers();
         } catch (IOException | GeneralSecurityException e) {
             throw new FederatorSslException("Failed to load trust store keystore.", e);
         }
+    }
+
+    /**
+     * Loads a truststore from the given bytes, auto-detecting whether its actual on-disk format
+     * is JKS or PKCS12. Modern {@code keytool} produces PKCS12-format files by default even when
+     * given a ".jks" filename/extension, so a truststore genuinely named "truststore.jks" may not
+     * actually be in JKS format. Tries JKS first (for genuinely older JKS files), falling back to
+     * PKCS12. Ported from the sibling gRPC Federator's identical {@code SSLUtils} method.
+     *
+     * @throws FederatorSslException if the truststore cannot be loaded as either format
+     */
+    private static KeyStore loadTrustStore(byte[] truststoreBytes, String truststorePassword) {
+        Exception lastError = null;
+        for (String type : new String[] {KEYSTORE_TYPE_JKS, KEYSTORE_TYPE_PKCS12}) {
+            try {
+                KeyStore keyStore = KeyStore.getInstance(type);
+                keyStore.load(new ByteArrayInputStream(truststoreBytes), truststorePassword.toCharArray());
+                log.info("Truststore loaded successfully as {} format", type);
+                return keyStore;
+            } catch (Exception e) {
+                lastError = e;
+            }
+        }
+        throw new FederatorSslException("Failed to load truststore as JKS or PKCS12 format.", lastError);
     }
 
     /**
@@ -289,13 +314,21 @@ public class SSLUtils {
      * @param truststorePassword the password for the truststore
      * @return an initialized SSLContext
      * */
+    /**
+     * Creates an SSLContext using only the provided truststore path and password.
+     *
+     * @param truststorePath the path to the truststore file (JKS or PKCS12 format, auto-detected -
+     *                       see {@link #loadTrustStore})
+     * @param truststorePassword the password for the truststore
+     * @return an initialized SSLContext
+     * */
     public static SSLContext createSSLContextWithTrustStore(String truststorePath, String truststorePassword) {
         try {
-            // Load truststore (JKS)
-            KeyStore trustStore = KeyStore.getInstance(KEYSTORE_TYPE_JKS);
+            byte[] truststoreBytes;
             try (InputStream is = new FileInputStream(truststorePath)) {
-                trustStore.load(is, truststorePassword.toCharArray());
+                truststoreBytes = is.readAllBytes();
             }
+            KeyStore trustStore = loadTrustStore(truststoreBytes, truststorePassword);
             printCertificates("Truststore", trustStore);
             TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
             tmf.init(trustStore);

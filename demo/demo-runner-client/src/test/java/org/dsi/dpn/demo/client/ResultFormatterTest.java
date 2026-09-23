@@ -54,6 +54,12 @@ class ResultFormatterTest {
         assertThat(out).contains("HTTP 404");
     }
 
+    @Test @DisplayName("expected() omits the detail line when no detail is given")
+    void expected_noDetail_omitsDetailLine() {
+        assertThat(fmt.expected("GET", "/assets", "NOT FOUND", null)).doesNotContain("Detail:");
+        assertThat(fmt.expected("GET", "/assets", "NOT FOUND", "  ")).doesNotContain("Detail:");
+    }
+
     @Test @DisplayName("failure() reports the detail")
     void failure_reportsDetail() {
         String out = fmt.failure("POST", "/fsp/x/assets", "connection refused");
@@ -75,6 +81,16 @@ class ResultFormatterTest {
         assertThat(out).contains("SW1A 1AA");
         assertThat(out).contains("(none)");   // no assetId supplied
         assertThat(out).contains("FSP");
+    }
+
+    @Test @DisplayName("parameters() prints the assetId when one is supplied")
+    void parameters_withAssetId_printsIt() {
+        UUID assetId = UUID.randomUUID();
+        DemoParameters params = new DemoParameters(
+                "Org A", "Product A", "1000000000001", "SW1A 1AA", assetId,
+                UUID.randomUUID(), "fsp-001", "FSP", true);
+
+        assertThat(fmt.parameters(params)).contains(assetId.toString());
     }
 
     @Test @DisplayName("step() and banner() render headings")

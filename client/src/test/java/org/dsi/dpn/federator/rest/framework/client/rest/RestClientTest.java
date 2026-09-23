@@ -2,17 +2,23 @@
 package org.dsi.dpn.federator.rest.framework.client.rest;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 import reactor.core.publisher.Mono;
@@ -24,6 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
@@ -267,6 +274,76 @@ class RestClientTest {
     }
 
     // -- ProductRegistration record --------------------------------------------
+
+    // -- onStatus 401 handler lambda -------------------------------------------
+
+    @Test @DisplayName("GET's onStatus(401) handler predicate/function are wired and invoked correctly")
+    void get_onStatus401Handler_bodylessPath() {
+        client.get(KEY, ALLOWED_PATH);
+
+        ArgumentCaptor<Predicate> predicateCaptor = ArgumentCaptor.forClass(Predicate.class);
+        ArgumentCaptor<Function> functionCaptor = ArgumentCaptor.forClass(Function.class);
+        verify(responseSpec).onStatus(predicateCaptor.capture(), functionCaptor.capture());
+
+        assertThat(predicateCaptor.getValue().test(HttpStatus.UNAUTHORIZED)).isTrue();
+        assertThat(predicateCaptor.getValue().test(HttpStatus.OK)).isFalse();
+
+        ClientResponse mockResponse = mock(ClientResponse.class);
+        WebClientResponseException ex =
+                WebClientResponseException.create(401, "Unauthorized", null, null, null);
+        when(mockResponse.createException()).thenReturn(Mono.just(ex));
+
+        Object result = functionCaptor.getValue().apply(mockResponse);
+        assertThat(result).isInstanceOf(Mono.class);
+        verify(mockResponse).createException();
+    }
+
+    @Test @DisplayName("POST's onStatus(401) handler predicate/function are wired and invoked correctly")
+    void post_onStatus401Handler_bodyPath() {
+        client.post(KEY, ALLOWED_PATH, "{}");
+
+        ArgumentCaptor<Predicate> predicateCaptor = ArgumentCaptor.forClass(Predicate.class);
+        ArgumentCaptor<Function> functionCaptor = ArgumentCaptor.forClass(Function.class);
+        verify(responseSpec).onStatus(predicateCaptor.capture(), functionCaptor.capture());
+
+        assertThat(predicateCaptor.getValue().test(HttpStatus.UNAUTHORIZED)).isTrue();
+        assertThat(predicateCaptor.getValue().test(HttpStatus.INTERNAL_SERVER_ERROR)).isFalse();
+
+        ClientResponse mockResponse = mock(ClientResponse.class);
+        WebClientResponseException ex =
+                WebClientResponseException.create(401, "Unauthorized", null, null, null);
+        when(mockResponse.createException()).thenReturn(Mono.just(ex));
+
+        Object result = functionCaptor.getValue().apply(mockResponse);
+        assertThat(result).isInstanceOf(Mono.class);
+        verify(mockResponse).createException();
+    }
+
+    // -- applyExtraHeaders edge cases -------------------------------------------
+
+    @Test @DisplayName("applyExtraHeaders forwards ordinary headers, skips null key/value entries, "
+            + "and refuses a caller-supplied Authorization override (case-insensitive)")
+    void get_extraHeaders_skipsNullsAndBlocksAuthorizationOverride() {
+        Map<String, String> extra = new HashMap<>();
+        extra.put("X-Custom", "value1");
+        extra.put(null, "ignored-because-null-key");
+        extra.put("X-Null-Value", null);
+        extra.put("authorization", "attempted-override");
+
+        String result = client.get(KEY, ALLOWED_PATH, extra);
+
+        assertThat(result).isEqualTo("mock-response");
+        verify(headersSpec).header("X-Custom", "value1");
+        verify(headersSpec, never()).header(eq("X-Null-Value"), any());
+        verify(headersSpec, never()).header(eq("authorization"), anyString());
+        verify(headersSpec, never()).header(eq("Authorization"), eq("attempted-override"));
+    }
+
+    @Test @DisplayName("applyExtraHeaders is a no-op for an empty map")
+    void get_extraHeaders_emptyMap() {
+        String result = client.get(KEY, ALLOWED_PATH, Map.of());
+        assertThat(result).isEqualTo("mock-response");
+    }
 
     @Test @DisplayName("ProductRegistration record accessors work correctly")
     void productRegistration_accessors() {

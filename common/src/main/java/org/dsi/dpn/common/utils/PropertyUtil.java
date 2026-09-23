@@ -108,6 +108,11 @@ public class PropertyUtil {
     private static final String SERVER_TRUSTSTORE_PASSWORD = "server.truststorePassword";
     private static final String IDP_KEYSTORE_PASSWORD = "idp.keystore.password";
     private static final String IDP_TRUSTSTORE_PASSWORD = "idp.truststore.password";
+    // Matches the exact property key RedisUtil.java reads (see RedisUtil.REDIS_TRUSTSTORE_PASSWORD)
+    // - fixes a genuine gap where this password had no Vault-backed override path at all,
+    // unlike every other keystore/truststore password in this file, and so was left as a
+    // plaintext literal in common-configuration.properties.
+    private static final String REDIS_TRUSTSTORE_PASSWORD = "redis.truststore.password";
     private static final String VAULT_TLS_ENABLED_PROPERTY = "vault.tls.enabled";
 
     private static PropertyUtil instance;
@@ -689,7 +694,13 @@ public class PropertyUtil {
                     SERVER_P12_PASSWORD, getEnvOrDefault(ENV_VAULT_KEYSTORE_PASSWORD_PATH),
                     SERVER_TRUSTSTORE_PASSWORD, getEnvOrDefault(ENV_VAULT_TRUSTSTORE_PASSWORD_PATH),
                     IDP_KEYSTORE_PASSWORD, getEnvOrDefault(ENV_VAULT_KEYSTORE_PASSWORD_PATH),
-                    IDP_TRUSTSTORE_PASSWORD, getEnvOrDefault(ENV_VAULT_TRUSTSTORE_PASSWORD_PATH)
+                    IDP_TRUSTSTORE_PASSWORD, getEnvOrDefault(ENV_VAULT_TRUSTSTORE_PASSWORD_PATH),
+                    // Same common DPN certificate truststore as client/server/idp above - not a
+                    // separately-provisioned secret, so this reuses the same env var rather than
+                    // requiring a new one. Closes the gap where this specific password had no
+                    // Vault-backed override at all and was left as a plaintext literal in
+                    // common-configuration.properties.
+                    REDIS_TRUSTSTORE_PASSWORD, getEnvOrDefault(ENV_VAULT_TRUSTSTORE_PASSWORD_PATH)
             );
         }
 

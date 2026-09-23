@@ -49,9 +49,29 @@ public class HttpClientFactoryUtils {
     }
 
     public static HttpClient createHttpClient(Properties properties) {
+        return createHttpClient(properties, "idp.");
+    }
+
+    /**
+     * Like {@link #createHttpClient(Properties)}, but reads the truststore for a specific
+     * Keycloak client identified by {@code propertyPrefix} (e.g. {@code "redis.idp."} instead
+     * of the default {@code "idp."}). Falls back to the {@code "idp."} truststore if no
+     * prefix-specific truststore is configured, since by default no separate
+     * certificate/truststore is provisioned for secondary Keycloak clients (see
+     * common-configuration.properties) - this keeps existing deployments working unchanged
+     * while allowing an explicit override per client.
+     *
+     * @param propertyPrefix the properties-file key prefix to read the truststore from, e.g.
+     *                       {@code "idp."} or {@code "redis.idp."}. Must end in a trailing dot.
+     */
+    public static HttpClient createHttpClient(Properties properties, String propertyPrefix) {
         try {
-            String truststorePath = properties.getProperty("idp.truststore.path");
-            String truststorePassword = properties.getProperty("idp.truststore.password");
+            String truststorePath = properties.getProperty(propertyPrefix + "truststore.path");
+            String truststorePassword = properties.getProperty(propertyPrefix + "truststore.password");
+            if (truststorePath == null || truststorePath.isBlank()) {
+                truststorePath = properties.getProperty("idp.truststore.path");
+                truststorePassword = properties.getProperty("idp.truststore.password");
+            }
             SSLContext sslContext = SSLUtils.createSSLContextWithTrustStore(truststorePath, truststorePassword);
             return HttpClient.newBuilder()
                     .sslContext(sslContext)

@@ -133,4 +133,44 @@ class AllowedPathTest {
         // The path must still match.
         assertThat(new AllowedPath("GET", "/assets").matches(matcher, null, "/other")).isFalse();
     }
+
+    // ── Additional branch coverage ──────────────────────────────────────────────
+
+    @Test @DisplayName("Legacy form skips empty entries produced by a doubled comma")
+    void parse_legacySkipsEmptyEntries() {
+        List<AllowedPath> parsed = AllowedPath.parse("GET:/api/v1/fmar/assets,,POST:/api/v1/fmar/assets");
+
+        assertThat(parsed).containsExactly(
+                new AllowedPath("GET", "/api/v1/fmar/assets"),
+                new AllowedPath("POST", "/api/v1/fmar/assets"));
+    }
+
+    @Test @DisplayName("Legacy form treats a path-looking entry with an embedded colon as a bare path")
+    void parse_legacyPathWithColonIsBarePath() {
+        // colonIdx > 0 is true here, but the entry already starts with '/' so it is
+        // NOT split into method:path - it is kept whole as a bare (any-method) path.
+        List<AllowedPath> parsed = AllowedPath.parse("/api:weird/path");
+
+        assertThat(parsed).containsExactly(new AllowedPath("*", "/api:weird/path"));
+    }
+
+    @Test @DisplayName("JSON entry with an explicit empty request_type string is treated as blank")
+    void parse_jsonEmptyStringFieldIsBlank() {
+        List<AllowedPath> parsed = AllowedPath.parse("""
+                [{"request_type":"","request_path":"/assets"},
+                 {"request_type":"GET","request_path":"/ok"}]
+                """);
+
+        assertThat(parsed).containsExactly(new AllowedPath("GET", "/ok"));
+    }
+
+    @Test @DisplayName("JSON entry with an explicit null request_path is treated as missing")
+    void parse_jsonExplicitNullFieldIsMissing() {
+        List<AllowedPath> parsed = AllowedPath.parse("""
+                [{"request_type":"GET","request_path":null},
+                 {"request_type":"POST","request_path":"/ok"}]
+                """);
+
+        assertThat(parsed).containsExactly(new AllowedPath("POST", "/ok"));
+    }
 }

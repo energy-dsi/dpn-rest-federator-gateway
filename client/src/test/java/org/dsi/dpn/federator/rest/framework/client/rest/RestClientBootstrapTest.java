@@ -175,6 +175,23 @@ class RestClientBootstrapTest {
         assertThat(client).isNotNull();
     }
 
+    @Test @DisplayName("startCertWatcher() no-ops when the keystore's parent directory does not "
+            + "exist (Vault-sourced TLS - no keystore file/dir on disk)")
+    void startCertWatcher_missingParentDirectory(@TempDir Path tempDir) throws Exception {
+        var f = RestClient.class.getDeclaredField("commonProps");
+        f.setAccessible(true);
+        Properties props = new Properties();
+        props.setProperty("idp.keystore.path",
+                tempDir.resolve("no-such-subdir").resolve("keystore.p12").toString());
+        f.set(client, props);
+
+        client.startCertWatcher();
+
+        boolean started = Thread.getAllStackTraces().keySet().stream()
+                .anyMatch(t -> "rest-client-cert-watcher".equals(t.getName()));
+        assertThat(started).isFalse();
+    }
+
     @Test @DisplayName("startCertWatcher() starts daemon thread for valid path")
     void startCertWatcher_startsThread(@TempDir Path tempDir) throws Exception {
         Path p12 = tempDir.resolve("keystore.p12");
@@ -192,6 +209,42 @@ class RestClientBootstrapTest {
         boolean started = Thread.getAllStackTraces().keySet().stream()
                 .anyMatch(t -> "rest-client-cert-watcher".equals(t.getName()) && t.isDaemon());
         assertThat(started).isTrue();
+    }
+
+    // ── bootstrap() — calls REAL code, real Management Node call is attempted ─
+
+    @Test @DisplayName("bootstrap() wraps a Management Node fetch failure in IllegalStateException")
+    void bootstrap_wrapsFailureInIllegalStateException() {
+        when(idpTokenService.fetchToken()).thenReturn("token");
+        // commonProps is empty (test constructor) so the real HTTP plumbing invoked
+        // transitively by bootstrap() cannot succeed - it fails, and bootstrap()
+        // catches that failure and rewraps it.
+        assertThatThrownBy(() -> client.bootstrap())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("RestClient bootstrap failed");
+    }
+
+    // ── subscriptionsSummary() via resolve()'s error message ──────────────────
+
+    @Test @DisplayName("resolve() error message lists 2+ subscriptions separated by semicolons")
+    void resolve_unknownProduct_listsMultipleSubscriptionsWithSeparator() {
+        RestClient c = new RestClient(
+                Map.of(
+                        new ProductKey("Elexon", "Product A"),
+                        new RestClient.ProductRegistration(
+                                "Elexon", "producer-a", "Product A", "https://host-a:8443",
+                                List.of(new AllowedPath("GET", "/api/v1/a")), webClient),
+                        new ProductKey("Elexon", "Product B"),
+                        new RestClient.ProductRegistration(
+                                "Elexon", "producer-b", "Product B", "https://host-b:8443",
+                                List.of(new AllowedPath("GET", "/api/v1/b")), webClient)),
+                idpTokenService, ocspService, Duration.ofSeconds(5));
+
+        assertThatThrownBy(() -> c.resolve(new ProductKey("Nobody", "Unknown")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("productName='Product A'")
+                .hasMessageContaining("productName='Product B'")
+                .hasMessageContaining("; ");
     }
 
     // ── resolve() ────────────────────────────────────────────────────────────

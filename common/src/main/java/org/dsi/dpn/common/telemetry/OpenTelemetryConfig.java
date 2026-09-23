@@ -26,6 +26,21 @@ import org.slf4j.LoggerFactory;
  *   OTEL_TRACES_SAMPLER_ARG       e.g. 1.0
  * </pre>
  *
+ * <p>Two further, non-standard env vars enable HTTPS export against an OTLP collector whose
+ * receiver terminates TLS, trusting it via the same common truststore already used elsewhere in
+ * this project (see {@link OtlpTruststoreSupport}):
+ *
+ * <pre>
+ *   OTEL_EXPORTER_OTLP_TRUSTSTORE_PATH       e.g. /vault/truststore/truststore.jks
+ *   OTEL_EXPORTER_OTLP_TRUSTSTORE_PASSWORD
+ * </pre>
+ *
+ * <p>Both are optional: if either is unset or blank, OTLP export falls back to whatever trust
+ * the autoconfigure SDK resolves on its own, and the connection to the collector is otherwise
+ * unaffected - the same is true if {@code OTEL_EXPORTER_OTLP_ENDPOINT} itself is unset or blank,
+ * in which case the SDK simply has nowhere to export to and this class falls back to
+ * {@link OpenTelemetry#noop()} below. Neither condition can fail application startup.
+ *
  * <p>Ported from dpn-federator's {@code common.telemetry.OpenTelemetryConfig} (same class shape,
  * same fail-open behaviour): if the collector is unreachable or the SDK otherwise fails to
  * initialise, this falls back to {@link OpenTelemetry#noop()} rather than crashing the app —
@@ -66,6 +81,16 @@ public final class OpenTelemetryConfig {
         boolean exportingViaOtlp = false;
         try {
             String componentName = resolveComponentName();
+            // HTTPS support for OTLP export: trust the OTel Collector's HTTPS OTLP receiver
+            // using the same JKS truststore already used elsewhere in this project (Vault's own
+            // TLS connection, Redis TLS), via the OTEL_EXPORTER_OTLP_TRUSTSTORE_PATH/_PASSWORD
+            // env vars (see OtlpTruststoreSupport) - rather than the OTel autoconfigure SDK's
+            // own PEM-only OTEL_EXPORTER_OTLP_CERTIFICATE support. Null when those env vars are
+            // unset or blank, in which case the exporter customizers below are no-ops and
+            // autoconfigure's default trust resolution applies unchanged - this is what keeps
+            // the connection backward compatible and working when no OTEL endpoint/truststore is
+            // configured at all.
+            OtlpTruststoreSupport truststore = OtlpTruststoreSupport.resolve();
             AutoConfiguredOpenTelemetrySdk autoConfigured = AutoConfiguredOpenTelemetrySdk.builder()
                     // Stamp "component.name" onto every emitted log record so downstream log
                     // pipelines can attribute records to a component without editing every
@@ -73,6 +98,12 @@ public final class OpenTelemetryConfig {
                     .addLogRecordProcessorCustomizer((delegate, config) ->
                             LogRecordProcessor.composite(
                                     new ComponentNameLogRecordProcessor(componentName), delegate))
+                    .addSpanExporterCustomizer((exporter, config) ->
+                            truststore == null ? exporter : truststore.customizeSpanExporter(exporter))
+                    .addMetricExporterCustomizer((exporter, config) ->
+                            truststore == null ? exporter : truststore.customizeMetricExporter(exporter))
+                    .addLogRecordExporterCustomizer((exporter, config) ->
+                            truststore == null ? exporter : truststore.customizeLogRecordExporter(exporter))
                     .build();
             OpenTelemetrySdk sdk = autoConfigured.getOpenTelemetrySdk();
             openTelemetry = sdk;
