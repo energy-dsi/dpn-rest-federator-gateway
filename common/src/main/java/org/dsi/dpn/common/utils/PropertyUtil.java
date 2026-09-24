@@ -673,6 +673,20 @@ public class PropertyUtil {
                 LOGGER.error("Failed to load secret for {}", propertyKey, e);
             }
         }
+
+        // redis.truststore.password protects the same /vault/truststore/truststore.jks as
+        // vault.truststore.password (see PropertyUtil.buildSecretProvider), so it must be
+        // resolved from that same literal Kubernetes Secret env var - not from a Vault path
+        // lookup, which was reading a separately-provisioned secret that can hold a different
+        // value and was causing Redis TLS truststore validation failures on connect.
+        String redisTruststorePassword = System.getenv(ENV_VAULT_TRUSTSTORE_PASSWORD);
+        if (redisTruststorePassword != null
+                && !redisTruststorePassword.isBlank()
+                && properties.containsKey(REDIS_TRUSTSTORE_PASSWORD)) {
+            properties.put(REDIS_TRUSTSTORE_PASSWORD, redisTruststorePassword);
+            LOGGER.info("Overrode '{}' from {} (same source as vault.truststore.password)",
+                    REDIS_TRUSTSTORE_PASSWORD, ENV_VAULT_TRUSTSTORE_PASSWORD);
+        }
     }
 
 
@@ -694,13 +708,15 @@ public class PropertyUtil {
                     SERVER_P12_PASSWORD, getEnvOrDefault(ENV_VAULT_KEYSTORE_PASSWORD_PATH),
                     SERVER_TRUSTSTORE_PASSWORD, getEnvOrDefault(ENV_VAULT_TRUSTSTORE_PASSWORD_PATH),
                     IDP_KEYSTORE_PASSWORD, getEnvOrDefault(ENV_VAULT_KEYSTORE_PASSWORD_PATH),
-                    IDP_TRUSTSTORE_PASSWORD, getEnvOrDefault(ENV_VAULT_TRUSTSTORE_PASSWORD_PATH),
-                    // Same common DPN certificate truststore as client/server/idp above - not a
-                    // separately-provisioned secret, so this reuses the same env var rather than
-                    // requiring a new one. Closes the gap where this specific password had no
-                    // Vault-backed override at all and was left as a plaintext literal in
-                    // common-configuration.properties.
-                    REDIS_TRUSTSTORE_PASSWORD, getEnvOrDefault(ENV_VAULT_TRUSTSTORE_PASSWORD_PATH)
+                    IDP_TRUSTSTORE_PASSWORD, getEnvOrDefault(ENV_VAULT_TRUSTSTORE_PASSWORD_PATH)
+                    // redis.truststore.password is deliberately NOT mapped here. It protects the
+                    // same /vault/truststore/truststore.jks as vault.truststore.password, so it is
+                    // set directly from ENV_VAULT_TRUSTSTORE_PASSWORD in overrideWithSecrets below
+                    // instead of going through a separate Vault path lookup - the previous mapping
+                    // (reusing ENV_VAULT_TRUSTSTORE_PASSWORD_PATH as a Vault path reference) read a
+                    // different, independently-provisioned secret whose value can drift from the
+                    // literal password actually protecting that keystore, causing TLS handshake
+                    // failures against Redis. See PropertyUtil.overrideWithSecrets.
             );
         }
 
