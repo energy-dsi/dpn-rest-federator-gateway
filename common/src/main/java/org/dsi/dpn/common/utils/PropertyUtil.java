@@ -113,6 +113,14 @@ public class PropertyUtil {
     // unlike every other keystore/truststore password in this file, and so was left as a
     // plaintext literal in common-configuration.properties.
     private static final String REDIS_TRUSTSTORE_PASSWORD = "redis.truststore.password";
+    // Protects the SAME /vault/truststore/truststore.jks as vault.truststore.password and
+    // redis.truststore.password above - the redis.idp.* Keycloak client (dpn-service-client,
+    // used for Redis-gating and OTLP OAuth, see OtelBearerTokenSupport.java) is reached over
+    // HTTPS at an in-cluster hostname (dpn-keycloak.ns-dpn-01.svc.cluster.local) whose
+    // certificate this common truststore already trusts - no separate truststore/password is
+    // provisioned for it. Resolved the same way, for the same reason: a literal Kubernetes
+    // Secret env var, not a Vault path lookup.
+    private static final String REDIS_IDP_TRUSTSTORE_PASSWORD = "redis.idp.truststore.password";
     private static final String VAULT_TLS_ENABLED_PROPERTY = "vault.tls.enabled";
 
     private static PropertyUtil instance;
@@ -686,6 +694,16 @@ public class PropertyUtil {
             properties.put(REDIS_TRUSTSTORE_PASSWORD, redisTruststorePassword);
             LOGGER.info("Overrode '{}' from {} (same source as vault.truststore.password)",
                     REDIS_TRUSTSTORE_PASSWORD, ENV_VAULT_TRUSTSTORE_PASSWORD);
+        }
+
+        // Same override, same env var, for the redis.idp.* client's truststore password - see
+        // REDIS_IDP_TRUSTSTORE_PASSWORD's own comment for why this shares vault.truststore.password.
+        if (redisTruststorePassword != null
+                && !redisTruststorePassword.isBlank()
+                && properties.containsKey(REDIS_IDP_TRUSTSTORE_PASSWORD)) {
+            properties.put(REDIS_IDP_TRUSTSTORE_PASSWORD, redisTruststorePassword);
+            LOGGER.info("Overrode '{}' from {} (same source as vault.truststore.password)",
+                    REDIS_IDP_TRUSTSTORE_PASSWORD, ENV_VAULT_TRUSTSTORE_PASSWORD);
         }
     }
 
