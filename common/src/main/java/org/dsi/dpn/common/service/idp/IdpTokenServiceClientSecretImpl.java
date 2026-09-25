@@ -36,6 +36,16 @@ import org.dsi.dpn.common.exception.FederatorTokenException;
 public class IdpTokenServiceClientSecretImpl extends AbstractIdpTokenService {
 
     private static final String COMMON_CONFIG_PROPERTIES = "common.configuration";
+    // Caching a token for its full expires_in leaves a window, right at the boundary, where
+    // Redis still serves it as "cached" (Redis TTL enforcement lags behind real wall-clock
+    // time by however much clock drift exists between this pod and the Redis pod) even though
+    // the token's own exp claim has already passed - the far side (e.g. an OIDC-auth-enabled
+    // OTel Collector) then correctly rejects it. Verified directly: a captured token's real
+    // exp - iat matched expires_in exactly (300s, no Keycloak-side inconsistency), yet Redis
+    // continued serving the cached copy for roughly 60s past that real expiry before finally
+    // reporting a cache miss. Subtracting this buffer forces a proactive refresh shortly
+    // before the token's real expiry, regardless of inter-pod clock drift.
+    private static final long TOKEN_EXPIRY_SAFETY_BUFFER_SECONDS = 30L;
     private final String idpTokenUrl;
     private final String idpTokenUrlPropertyName;
     private final String idpClientId;
@@ -166,7 +176,15 @@ public class IdpTokenServiceClientSecretImpl extends AbstractIdpTokenService {
 
             Object expiresInRaw = json.get("expires_in");
             if (expiresInRaw instanceof Number number) {
-                persistTokenInCache(accessToken, number.longValue());
+                long expiresIn = number.longValue();
+                long cacheTtl = expiresIn - TOKEN_EXPIRY_SAFETY_BUFFER_SECONDS;
+                if (cacheTtl > 0) {
+                    persistTokenInCache(accessToken, cacheTtl);
+                } else {
+                    log.warn("Token response for prefix '{}' has expires_in={}s, too short to cache safely "
+                                    + "with a {}s buffer - not caching this token in Redis",
+                            propertyPrefix, expiresIn, TOKEN_EXPIRY_SAFETY_BUFFER_SECONDS);
+                }
             } else {
                 log.warn("Token response for prefix '{}' had no numeric 'expires_in' - "
                         + "not caching this token in Redis", propertyPrefix);

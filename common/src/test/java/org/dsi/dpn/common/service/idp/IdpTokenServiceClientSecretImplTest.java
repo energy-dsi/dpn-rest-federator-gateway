@@ -211,7 +211,9 @@ class IdpTokenServiceClientSecretImplTest {
         String token = service.fetchToken();
 
         assertThat(token).isEqualTo("fresh-token");
-        verify(redisUtilInstance).setValue(eq("client_secret_idp.access_token"), eq("fresh-token"), eq(300L));
+        // expires_in (300) minus the 30s safety buffer - see TOKEN_EXPIRY_SAFETY_BUFFER_SECONDS's
+        // own comment for why we never cache for the full raw expires_in.
+        verify(redisUtilInstance).setValue(eq("client_secret_idp.access_token"), eq("fresh-token"), eq(270L));
     }
 
     @Test
@@ -220,6 +222,22 @@ class IdpTokenServiceClientSecretImplTest {
         when(redisUtilInstance.getValue(any(), eq(String.class), anyBoolean())).thenReturn(null);
         when(httpResponse.statusCode()).thenReturn(200);
         when(httpResponse.body()).thenReturn("{\"access_token\":\"fresh-token\"}");
+        when(httpClient.send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any())).thenReturn(httpResponse);
+
+        IdpTokenServiceClientSecretImpl service = newService();
+        String token = service.fetchToken();
+
+        assertThat(token).isEqualTo("fresh-token");
+        verify(redisUtilInstance, never()).setValue(any(), any(), any(Long.class));
+    }
+
+    @Test
+    @DisplayName("fetchToken() does not cache the token when expires_in is too short to survive the safety buffer")
+    void fetchToken_expiresInTooShortForBuffer_doesNotCache() throws Exception {
+        when(redisUtilInstance.getValue(any(), eq(String.class), anyBoolean())).thenReturn(null);
+        when(httpResponse.statusCode()).thenReturn(200);
+        // 30s expires_in minus the 30s safety buffer would be <= 0 - must not cache in that case.
+        when(httpResponse.body()).thenReturn("{\"access_token\":\"fresh-token\",\"expires_in\":30}");
         when(httpClient.send(any(), org.mockito.ArgumentMatchers.<HttpResponse.BodyHandler<String>>any())).thenReturn(httpResponse);
 
         IdpTokenServiceClientSecretImpl service = newService();
@@ -330,8 +348,10 @@ class IdpTokenServiceClientSecretImplTest {
 
         verify(redisUtilInstance)
                 .getValue(eq("client_secret_redis.idp.access_token"), eq(String.class), anyBoolean());
+        // expires_in (60) minus the 30s safety buffer - see TOKEN_EXPIRY_SAFETY_BUFFER_SECONDS's
+        // own comment for why we never cache for the full raw expires_in.
         verify(redisUtilInstance)
-                .setValue(eq("client_secret_redis.idp.access_token"), eq("redis-idp-token"), eq(60L));
+                .setValue(eq("client_secret_redis.idp.access_token"), eq("redis-idp-token"), eq(30L));
         // Confirms the "idp." prefix's own key is never touched by the "redis.idp." client.
         verify(redisUtilInstance, times(0))
                 .getValue(eq("client_secret_idp.access_token"), eq(String.class), anyBoolean());
