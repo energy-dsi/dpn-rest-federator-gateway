@@ -8,6 +8,9 @@ import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppen
 import io.opentelemetry.sdk.OpenTelemetrySdk;
 import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk;
 import io.opentelemetry.sdk.logs.LogRecordProcessor;
+import io.opentelemetry.sdk.logs.export.LogRecordExporter;
+import io.opentelemetry.sdk.metrics.export.MetricExporter;
+import io.opentelemetry.sdk.trace.export.SpanExporter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,6 +43,17 @@ import org.slf4j.LoggerFactory;
  * unaffected - the same is true if {@code OTEL_EXPORTER_OTLP_ENDPOINT} itself is unset or blank,
  * in which case the SDK simply has nowhere to export to and this class falls back to
  * {@link OpenTelemetry#noop()} below. Neither condition can fail application startup.
+ *
+ * <p>A further, separate env var authenticates OTLP export with an OAuth2 Bearer token, on top
+ * of (not instead of) the TLS trust above - see {@link OtelBearerTokenSupport}:
+ *
+ * <pre>
+ *   OTEL_EXPORTER_OTLP_OAUTH_ENABLED         true | false (default false, unchanged behaviour)
+ * </pre>
+ *
+ * <p>Authenticates as the SAME {@code dpn-service-client} Keycloak client already used for
+ * Redis-gating - no separate {@code otel.idp.*} properties or Keycloak client are configured
+ * for this; see {@link OtelBearerTokenSupport}'s Javadoc for why.
  *
  * <p>Ported from dpn-federator's {@code common.telemetry.OpenTelemetryConfig} (same class shape,
  * same fail-open behaviour): if the collector is unreachable or the SDK otherwise fails to
@@ -91,6 +105,11 @@ public final class OpenTelemetryConfig {
             // the connection backward compatible and working when no OTEL endpoint/truststore is
             // configured at all.
             OtlpTruststoreSupport truststore = OtlpTruststoreSupport.resolve();
+            // Independent of truststore above: that decides whether the Collector's cert is
+            // trusted; this decides whether requests carry a Bearer token. Both customizers can
+            // apply to the very same exporter instance, in either order, without interfering -
+            // see OtelBearerTokenSupport's Javadoc.
+            OtelBearerTokenSupport bearerToken = OtelBearerTokenSupport.resolve();
             AutoConfiguredOpenTelemetrySdk autoConfigured = AutoConfiguredOpenTelemetrySdk.builder()
                     // Stamp "component.name" onto every emitted log record so downstream log
                     // pipelines can attribute records to a component without editing every
@@ -98,12 +117,19 @@ public final class OpenTelemetryConfig {
                     .addLogRecordProcessorCustomizer((delegate, config) ->
                             LogRecordProcessor.composite(
                                     new ComponentNameLogRecordProcessor(componentName), delegate))
-                    .addSpanExporterCustomizer((exporter, config) ->
-                            truststore == null ? exporter : truststore.customizeSpanExporter(exporter))
-                    .addMetricExporterCustomizer((exporter, config) ->
-                            truststore == null ? exporter : truststore.customizeMetricExporter(exporter))
-                    .addLogRecordExporterCustomizer((exporter, config) ->
-                            truststore == null ? exporter : truststore.customizeLogRecordExporter(exporter))
+                    .addSpanExporterCustomizer((exporter, config) -> {
+                        SpanExporter result = truststore == null ? exporter : truststore.customizeSpanExporter(exporter);
+                        return bearerToken == null ? result : bearerToken.customizeSpanExporter(result);
+                    })
+                    .addMetricExporterCustomizer((exporter, config) -> {
+                        MetricExporter result = truststore == null ? exporter : truststore.customizeMetricExporter(exporter);
+                        return bearerToken == null ? result : bearerToken.customizeMetricExporter(result);
+                    })
+                    .addLogRecordExporterCustomizer((exporter, config) -> {
+                        LogRecordExporter result =
+                                truststore == null ? exporter : truststore.customizeLogRecordExporter(exporter);
+                        return bearerToken == null ? result : bearerToken.customizeLogRecordExporter(result);
+                    })
                     .build();
             OpenTelemetrySdk sdk = autoConfigured.getOpenTelemetrySdk();
             openTelemetry = sdk;
