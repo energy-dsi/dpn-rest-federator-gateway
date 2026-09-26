@@ -1,0 +1,106 @@
+job:
+  name: dpn-demo-runner-client
+  # Overridden per run (--set job.nameSuffix=$(Build.BuildId)) so each pipeline
+  # run creates a distinct Job object rather than trying to mutate one.
+  nameSuffix: "manual"
+  image:
+    repository: <<CONTAINER_REGISTRY_URL>>/dpn-demo-runner-client
+    tag: "latest"
+    pullPolicy: Always
+  # Keep completed Jobs for an hour so their logs can be inspected.
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  env:
+    organisationName: ""              # blank = every subscribed organisation
+    productName: ""                   # blank = every subscribed product; together with organisationName above, blank/blank targets ALL subscriptions
+    mpan: "1000000000001"
+    postcode: "SW1A 1AA"
+    # Left blank -> the client omits assetId / generates a random FSP id.
+    assetId: ""
+    fspId: ""
+    senderFmarId: "dpn-demo-runner-client"
+    senderRole: "FSP"
+    contractualAuthorisation: "true"
+  consumerId: ""
+  readTimeoutSeconds: 60
+
+  # Management Node serving this consumer's REST product configuration.
+  managementNode:
+    baseUrl: https://localhost:8090
+    requestTimeout: 5
+    cacheTtlSeconds: 60
+
+  # IDP token acquisition cache. Points at the same Redis the gateway uses.
+  redis:
+    host: dpn-rest-federator-redis
+    port: 6379
+    tlsEnabled: false
+    prefix: federator-client
+    username: ""
+
+  # Identity Provider. Keystore/truststore passwords are not set here — the
+  # Vault secret provider supplies them at startup.
+  idp:
+    clientId: ""
+    authMode: private_key_jwt
+    mtlsEnabled: true
+    jwksUrl: ""
+    tokenUrl: ""
+    jwtAlgorithm: RS256
+    jwtKeyAlias: federator
+    keystorePath: /tls/keystore.p12
+    truststorePath: /tls/truststore.jks
+
+  # client.properties / common-configuration.properties, rendered from these
+  # values by demo-runner-client-config.yaml.
+  clientProperties:
+    configMapName: dpn-rest-federator-client-properties
+    mountPath: /config
+
+  # mTLS keystore/truststore for rest-federator-client's outbound calls, as
+  # plain files from a Secret. Only used when vault.tlsEnabled is false below.
+  certificates:
+    enabled: false
+    secretName: dpn-federator-certificates
+    mountPath: /certs
+
+  # Vault. authMethod: token | approle. tlsEnabled reads the TLS material
+  # straight from Vault instead of a mounted keystore/truststore file.
+  vault:
+    uri: ""
+    truststorePath: /vault/truststore/truststore.jks
+    truststorePassword: ""
+    authMethod: token
+    tlsEnabled: true
+    tlsBasePath: node-net/client
+    tlsKeystoreAlias: federator
+    # VAULT_TRUSTSTORE_PASSWORD (tls-auth-secret), VAULT_TOKEN
+    # (certificate-manager-secrets) and the vault-truststore volume
+    # (cert-manager-truststore) are sourced from fixed Secret names directly
+    # in the Job template -- not configurable here, matching the federator
+    # gateway's own convention.
+    appRole:
+      roleId: ""
+      mountPath: approle
+      renewalIntervalSeconds: 3600
+      # secretId is only used when useSecretIdRef is false (NOT recommended).
+      secretId: ""
+      # When true, VAULT_SECRET_ID is sourced from a Kubernetes Secret via
+      # secretKeyRef instead of a plaintext value. Set true per-env.
+      useSecretIdRef: false
+      secretIdSecretName: certificate-manager-secrets
+      secretIdSecretKey: VAULT_APPROLE_SECRET_ID
+  otel:
+    endpoint: ""
+    protocol: "grpc"
+    insecure: "true"
+    serviceName: "demo-runner-client"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

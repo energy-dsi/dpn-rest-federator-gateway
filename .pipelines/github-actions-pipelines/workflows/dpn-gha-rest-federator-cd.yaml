@@ -1,0 +1,397 @@
+name: DPN CD - REST Federator Gateway
+
+# Deploys, as separate jobs so each can be rolled back independently:
+#   1. deploy-redis          -- the Redis cache this chart owns
+#   2. deploy-rest-federator -- the REST Federator gateway itself
+#
+# Kafka/Zookeeper still come from dpn-platform in this same AKS cluster and
+# are not touched here.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+          - gcp
+
+      imageTag:
+        description: "REST Federator Server image tag"
+        required: true
+        type: string
+
+      imageRepository:
+        description: "REST Federator Server image path AFTER <<your specific value>>/ (e.g. 1.0.1/dpn-rest-federator-server) — leave blank to use the environment's configured registry (IMAGE_REGISTRY on aws, BASE_REGISTRY on azure)"
+        required: false
+        default: ""
+        type: string
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  HELM_DIR: dpn-rest-federator-gateway/charts/dpn-rest-federator
+  RELEASE_NAME: dpn-rest-federator
+  REDIS_HELM_DIR: dpn-rest-federator-gateway/charts/dpn-redis
+  REDIS_RELEASE_NAME: dpn-redis
+  VALUES_FILE: values/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.yaml
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-redis:
+    name: Helm Deploy - Redis
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Applied Parameters
+        shell: bash
+        run: |
+          echo "environment=${{ inputs.environment }}"
+          echo "cluster=${{ inputs.cluster }}"
+          echo "cloud=${{ inputs.cloud }}"
+          echo "imageTag=${{ inputs.imageTag }}"
+          echo "imageRepository=${{ inputs.imageRepository }}"
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      - name: Helm Lint + Dry Run - Redis
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          helm lint "$REDIS_HELM_DIR"
+          helm upgrade --install "$REDIS_RELEASE_NAME" "$REDIS_HELM_DIR" \
+            -n "$NAMESPACE" \
+            -f "$REDIS_HELM_DIR/$VALUES_FILE" \
+            --dry-run --debug >/dev/null
+          echo "Helm dry-run successful"
+
+      - name: Helm Deploy - Redis
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          helm upgrade --install "$REDIS_RELEASE_NAME" "$REDIS_HELM_DIR" \
+            -n "$NAMESPACE" \
+            -f "$REDIS_HELM_DIR/$VALUES_FILE" \
+            --debug
+
+          echo "========================================"
+          echo "POST-DEPLOY VERIFICATION - REDIS"
+          echo "========================================"
+          REDIS_NAME=$(helm get values "$REDIS_RELEASE_NAME" -n "$NAMESPACE" -a -o json | jq -r '.redisCache.name')
+          if [ -z "$REDIS_NAME" ] || [ "$REDIS_NAME" == "null" ]; then
+            echo "::error::Could not resolve the Redis deployment name from Helm values"
+            exit 1
+          fi
+          echo "Redis deployment: ${REDIS_NAME}"
+
+          kubectl rollout status deployment/"${REDIS_NAME}" -n "$NAMESPACE" --timeout=300s
+          kubectl get svc -n "$NAMESPACE" -l app="${REDIS_NAME}"
+          kubectl get pods -n "$NAMESPACE" -l app="${REDIS_NAME}"
+
+  deploy-rest-federator:
+    name: Helm Deploy - REST Federator
+    needs: deploy-redis
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Applied Parameters
+        shell: bash
+        run: |
+          echo "environment=${{ inputs.environment }}"
+          echo "cluster=${{ inputs.cluster }}"
+          echo "cloud=${{ inputs.cloud }}"
+          echo "imageTag=${{ inputs.imageTag }}"
+          echo "imageRepository=${{ inputs.imageRepository }}"
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      ###################################################################
+      # AWS IRSA — IAM role for the rest-federator ServiceAccount, and the
+      # BACKEND_API_KEY Secrets Manager entry its SecretProviderClass reads.
+      # Idempotent: creates the role/secret only if missing, never
+      # overwrites an existing secret's value.
+      ###################################################################
+      - name: Provision AWS IRSA Role + Secrets
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ROLE_NAME="dpn-rest-federator-secrets-role"
+          SA_NAMESPACE="$NAMESPACE"
+          SA_NAME="dpn-rest-federator"
+          SECRET_PREFIX="dpn/${{ inputs.environment }}-${{ inputs.cluster }}/rest-federator"
+
+          OIDC_ISSUER=$(aws eks describe-cluster \
+            --name "$EKS_CLUSTER" \
+            --region "$AWS_REGION" \
+            --query "cluster.identity.oidc.issuer" --output text)
+          OIDC_PROVIDER=${OIDC_ISSUER#https://}
+
+          cat > rest-federator-trust-policy.json <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+                },
+                "Action": "sts:AssumeRoleWithWebIdentity",
+                "Condition": {
+                  "StringEquals": {
+                    "${OIDC_PROVIDER}:aud": "sts.amazonaws.com",
+                    "${OIDC_PROVIDER}:sub": "system:serviceaccount:${SA_NAMESPACE}:${SA_NAME}"
+                  }
+                }
+              }
+            ]
+          }
+          EOF
+
+          cat > rest-federator-permissions-policy.json <<EOF
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Action": ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+                "Resource": "arn:aws:secretsmanager:${AWS_REGION}:${AWS_ACCOUNT_ID}:secret:${SECRET_PREFIX}/*"
+              }
+            ]
+          }
+          EOF
+
+          if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+            echo "Role $ROLE_NAME already exists — updating trust policy."
+            aws iam update-assume-role-policy \
+              --role-name "$ROLE_NAME" \
+              --policy-document file://rest-federator-trust-policy.json
+          else
+            aws iam create-role \
+              --role-name "$ROLE_NAME" \
+              --assume-role-policy-document file://rest-federator-trust-policy.json
+            echo "Created role $ROLE_NAME."
+          fi
+
+          aws iam put-role-policy \
+            --role-name "$ROLE_NAME" \
+            --policy-name dpn-rest-federator-permissions \
+            --policy-document file://rest-federator-permissions-policy.json
+
+          ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query "Role.Arn" --output text)
+          echo "IRSA role ready: $ROLE_ARN"
+          echo "Set this as serviceAccount.irsaRoleArn in the chart's AWS values file."
+
+          create_secret_if_missing() {
+            local key="$1"
+            local value="$2"
+            local secret_name="$SECRET_PREFIX/$key"
+
+            if aws secretsmanager describe-secret --secret-id "$secret_name" >/dev/null 2>&1; then
+              echo "Secret $secret_name already exists — leaving value untouched."
+            else
+              aws secretsmanager create-secret \
+                --name "$secret_name" \
+                --secret-string "$value" >/dev/null
+              echo "Created $secret_name."
+            fi
+          }
+
+          create_secret_if_missing "BACKEND_API_KEY" "REPLACE_ME"
+          # Must match whatever password actually protects the AWS Vault
+          # truststore.jks — a placeholder here will let the pod start but
+          # fail to open the truststore at runtime. Update to the real value
+          # once that truststore is established for this environment.
+          create_secret_if_missing "VAULT_TRUSTSTORE_PASSWORD" "REPLACE_ME"
+
+      - name: Fetch Vault Truststore Password
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Only needed when this environment's vault.authMethod is "token" --
+          # AppRole environments renew their own lease and don't need this.
+          # TRUSTSTORE-PASSWORD is the canonical, actively-rotated Key Vault
+          # object dpn-tls-cd (dpn-federator-certificate-manager) writes on
+          # every cert renewal. VAULT-TRUSTSTORE-PASSWORD is a bootstrap-only
+          # artifact (vault-tls-bootstrap-cd) that's never touched again once
+          # an environment is stood up, so it can drift stale after rotation.
+          VAULT_TRUSTSTORE_PASSWORD=$(az keyvault secret show \
+            --vault-name "$KEY_VAULT_NAME" \
+            --name TRUSTSTORE-PASSWORD \
+            --query value -o tsv)
+
+          echo "VAULT_TRUSTSTORE_PASSWORD=$VAULT_TRUSTSTORE_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Fetch Vault Truststore Password (AWS)
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # AWS Secrets Manager equivalent of the Key Vault lookup above.
+          VAULT_TRUSTSTORE_PASSWORD=$(aws secretsmanager get-secret-value \
+            --secret-id "dpn/${{ inputs.environment }}-${{ inputs.cluster }}/rest-federator/VAULT_TRUSTSTORE_PASSWORD" \
+            --query SecretString --output text)
+
+          echo "VAULT_TRUSTSTORE_PASSWORD=$VAULT_TRUSTSTORE_PASSWORD" >> "$GITHUB_ENV"
+
+      ###################################################################
+      # Fetch the AppRole role_id created by
+      # "DPN CD - REST Federator Role ID Creation" (run that workflow first)
+      # so the checked-in values file placeholder never needs manual editing.
+      ###################################################################
+      - name: Fetch Vault AppRole Role ID (AWS)
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VAULT_APPROLE_ROLE_ID=$(aws secretsmanager get-secret-value \
+            --secret-id "dpn/${{ inputs.environment }}-${{ inputs.cluster }}/rest-federator/VAULT_APPROLE_ROLE_ID" \
+            --query SecretString --output text)
+
+          echo "VAULT_APPROLE_ROLE_ID=$VAULT_APPROLE_ROLE_ID" >> "$GITHUB_ENV"
+
+      - name: Helm Lint + Dry Run
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_REPO="${{ inputs.imageRepository }}"
+          if [ -n "$IMAGE_REPO" ]; then
+            IMAGE_REPO="<<your specific value>>/$IMAGE_REPO"
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            IMAGE_REPO="$IMAGE_REGISTRY/dpn-rest-federator-server"
+          else
+            IMAGE_REPO="$BASE_REGISTRY/dpn-rest-federator-server"
+          fi
+
+          APPROLE_ARGS=()
+          if [ -n "${VAULT_APPROLE_ROLE_ID:-}" ]; then
+            APPROLE_ARGS=(--set restFederatorServer.vault.appRole.roleId="$VAULT_APPROLE_ROLE_ID")
+          fi
+
+          helm lint "$HELM_DIR"
+          helm upgrade --install "$RELEASE_NAME" "$HELM_DIR" \
+            -n "$NAMESPACE" \
+            --set restFederatorServer.image.repository="$IMAGE_REPO" \
+            --set restFederatorServer.image.tag="${{ inputs.imageTag }}" \
+            --set restFederatorServer.vault.truststorePassword="$VAULT_TRUSTSTORE_PASSWORD" \
+            "${APPROLE_ARGS[@]}" \
+            -f "$HELM_DIR/$VALUES_FILE" \
+            --dry-run --debug >/dev/null
+
+          echo "Helm dry-run successful"
+
+      - name: Helm Deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_REPO="${{ inputs.imageRepository }}"
+          if [ -n "$IMAGE_REPO" ]; then
+            IMAGE_REPO="<<your specific value>>/$IMAGE_REPO"
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            IMAGE_REPO="$IMAGE_REGISTRY/dpn-rest-federator-server"
+          else
+            IMAGE_REPO="$BASE_REGISTRY/dpn-rest-federator-server"
+          fi
+
+          APPROLE_ARGS=()
+          if [ -n "${VAULT_APPROLE_ROLE_ID:-}" ]; then
+            APPROLE_ARGS=(--set restFederatorServer.vault.appRole.roleId="$VAULT_APPROLE_ROLE_ID")
+          fi
+
+          helm upgrade --install "$RELEASE_NAME" "$HELM_DIR" \
+            -n "$NAMESPACE" \
+            --set restFederatorServer.image.repository="$IMAGE_REPO" \
+            --set restFederatorServer.image.tag="${{ inputs.imageTag }}" \
+            --set restFederatorServer.vault.truststorePassword="$VAULT_TRUSTSTORE_PASSWORD" \
+            "${APPROLE_ARGS[@]}" \
+            -f "$HELM_DIR/$VALUES_FILE" \
+            --debug

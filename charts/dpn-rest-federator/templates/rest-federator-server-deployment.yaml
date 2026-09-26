@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.restFederatorServer.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.restFederatorServer.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.restFederatorServer.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.restFederatorServer.name }}
+    spec:
+      containers:
+        - name: {{ .Values.restFederatorServer.name }}
+          image: "{{ .Values.restFederatorServer.image.repository }}:{{ .Values.restFederatorServer.image.tag }}"
+          imagePullPolicy: {{ .Values.restFederatorServer.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: {{ .Values.restFederatorServer.service.port }}
+          env:
+            # Properties file naming the shared common-configuration file.
+            - name: FEDERATOR_SERVER_PROPERTIES
+              value: {{ .Values.restFederatorServer.propertiesPath | quote }}
+            # Whether this listener terminates HTTPS at all.
+            - name: SERVER_SSL_ENABLED
+              value: {{ .Values.restFederatorServer.tls.enabled | quote }}
+            # Whether inbound connections must additionally present a client
+            # certificate. Meaningless when SERVER_SSL_ENABLED is false.
+            - name: SERVER_SSL_CLIENT_AUTH
+              value: {{ .Values.restFederatorServer.mtls.enabled | ternary "need" "none" | quote }}
+            # Managed identity used by the secrets-store CSI driver. Set
+            # unconditionally, matching the federator gateway's own template.
+            - name: AZURE_CLIENT_ID
+              value: {{ .Values.keyvault.clientID | quote }}
+            # Internal backend the gateway proxies authorized requests to.
+            - name: BACKEND_BASE_URL
+              value: {{ .Values.restFederatorServer.backend.baseUrl | quote }}
+            # Shared secret for the gateway -> backend hop. Held in a Secret;
+            # never set as a plain value here.
+            - name: BACKEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.restFederatorServer.backend.apiKeySecret.name }}
+                  key: {{ .Values.restFederatorServer.backend.apiKeySecret.key }}
+            {{- with .Values.restFederatorServer.redis }}
+            # Redis is deployed by the separate dpn-redis chart; these point the
+            # gateway at that release's in-cluster Service.
+            - name: REDIS_HOST
+              value: {{ .host | quote }}
+            - name: REDIS_PORT
+              value: {{ .port | quote }}
+            {{- end }}
+            {{- with .Values.restFederatorServer.vault }}
+            # Vault. With tlsEnabled the TLS material is read straight from
+            # Vault, so no shared file mount is needed to distribute
+            # certificates. Mirrors the federator gateway's own wiring.
+            # Secret name/keys here match the federator gateway's own
+            # convention exactly and are not env-configurable there either.
+            - name: VAULT_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tls-auth-secret
+                  key: TRUSTSTORE_PASSWORD
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: certificate-manager-secrets
+                  key: VAULT_TOKEN
+                  # Absent in AppRole mode; a required key would crash the pod.
+                  optional: true
+            {{- if eq (lower .authMethod) "approle" }}
+            - name: VAULT_ROLE_ID
+              value: {{ .appRole.roleId | quote }}
+            - name: VAULT_SECRET_ID
+            {{- if .appRole.useSecretIdRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .appRole.secretIdSecretName }}
+                  key: {{ .appRole.secretIdSecretKey }}
+            {{- else }}
+              value: {{ .appRole.secretId | quote }}
+            {{- end }}
+            {{- end }}
+            - name: VAULT_KEYSTORE_PASSWORD_PATH
+              value: {{ .keystorePasswordPath | quote }}
+            - name: VAULT_TRUSTSTORE_PASSWORD_PATH
+              value: {{ .truststorePasswordPath | quote }}
+            {{- end }}
+            {{- with .Values.restFederatorServer.otel }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .protocol | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .insecure | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .serviceName | quote }}
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ .tracesSampler | quote }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ .tracesSamplerArg | quote }}
+            {{- end }}
+          {{- with .Values.restFederatorServer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # server.properties and common-configuration.properties, rendered
+            # from Helm values by rest-federator-server-config.yaml.
+            - name: config
+              mountPath: /config
+              readOnly: true
+            # Truststore used to reach Vault itself. Secret name matches the
+            # federator gateway's own convention exactly (always mounted).
+            - name: vault-truststore
+              mountPath: /vault/truststore
+              readOnly: true
+            {{- if .Values.keyvault.enabled }}
+            # Mounting the CSI volume is what triggers the driver to sync the
+            # Key Vault secrets into the Kubernetes Secret.
+            - name: server-secrets-store
+              mountPath: {{ .Values.keyvault.mountPath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Values.restFederatorServer.name }}-config
+        - name: vault-truststore
+          secret:
+            secretName: cert-manager-truststore
+        {{- if .Values.keyvault.enabled }}
+        - name: server-secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ .Values.restFederatorServer.name }}-kv-secrets
+        {{- end }}

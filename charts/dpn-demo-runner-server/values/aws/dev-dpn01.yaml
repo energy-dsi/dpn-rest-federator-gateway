@@ -1,0 +1,85 @@
+# =============================================================================
+# Demo Runner Server — AWS dev-dpn01 values
+# EKS     : <<your specific value>>
+# Account : <<your specific value>>
+# Region  : eu-west-2
+#
+# STATUS: draft — NOT yet ready to deploy. Blocked on:
+#   1. image.repository below assumes this service's image has been published
+#      to <<your specific value>>/dpn-demo-runner-server (same
+#      name/tag as the Azure ACR image, registry host swapped only) — NOT
+#      confirmed against a real GHCR listing. Verify before first deploy.
+#   2. vault.appRole.roleId below is a placeholder. The real AppRole role id
+#      for this AWS Vault instance must be obtained and substituted before
+#      first deploy (mirrors azure/dev-dpn01.yaml's approle authMethod).
+#
+# This chart has no keyvault/SecretProviderClass/IRSA wiring at all (confirmed:
+# no template in this chart references .Values.keyvault), so no secretsManager
+# or serviceAccount block is needed here.
+# =============================================================================
+
+cloudProvider: aws
+
+imagePullSecret: ghcr-pull-secret
+
+demoRunnerServer:
+  name: dpn-demo-runner-server-1
+  replicaCount: 1
+  image:
+    repository: <<your specific value>>/dpn-demo-runner-server
+    tag: "1.0.0"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    # AWS NLB: exposes this service privately inside the VPC.
+    # loadBalancerIP intentionally omitted -- AWS assigns dynamically.
+    internalLoadBalancer: true
+    port: 8443
+  # Same Secret the REST Federator gateway reads, so both ends of the
+  # gateway -> backend hop share one value. Must match
+  # restFederatorServer.backend.apiKeySecret in dpn-rest-federator's own AWS
+  # values file exactly (dpn-backend-api-key/apiKey, the chart default, is
+  # never actually created on AWS -- rest-federator overrides it to its own
+  # SecretProviderClass-synced secret, so this side must follow).
+  apiKeySecret:
+    name: dpn-rest-federator-server-secrets
+    key: BACKEND_API_KEY
+  # Vault. Server-only TLS -- cloud-agnostic in-cluster URI, carried over
+  # unchanged. appRole.roleId is BLOCKED -- see header.
+  vault:
+    uri: https://vault-https.ns-dpn-01.svc.cluster.local:8200
+    truststorePath: /vault/truststore/truststore.jks
+    truststorePassword: ""
+    authMethod: approle
+    tlsEnabled: true
+    tlsBasePath: node-net/client
+    tlsKeystoreAlias: federator
+    appRole:
+      # Overwritten at deploy time by dpn-demo-runner-cd.yml's "Fetch Vault
+      # AppRole Role ID (AWS)" step -- this placeholder is never actually
+      # deployed. Shares rest-federator's own AppRole (see secretIdSecretName
+      # below), not a separate one.
+      roleId: "REPLACE_ME_VAULT_APPROLE_ROLE_ID"
+      mountPath: approle
+      renewalIntervalSeconds: 3600
+      useSecretIdRef: true
+      # Shares rest-federator's AppRole (same roleId, fetched above) rather
+      # than the chart default (certificate-manager-secrets), which holds
+      # CERTIFICATE-MANAGER's own unrelated AppRole secret_id and would
+      # mismatch the roleId fetched above.
+      secretIdSecretName: dpn-rest-federator-server-secrets
+      secretIdSecretKey: VAULT_APPROLE_SECRET_ID
+  otel:
+    endpoint: "http://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317"
+    protocol: "grpc"
+    insecure: "true"
+    serviceName: "demo-runner-server"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

@@ -1,0 +1,43 @@
+{{- if .Values.restFederatorServer.service.internalLoadBalancer }}
+# Azure Internal Load Balancer for the REST Federator gateway.
+#
+# Deliberately a SECOND Service alongside the ClusterIP one, mirroring
+# dpn-federator's federator-server-lb-service.yaml. The ClusterIP Service keeps
+# its plain in-cluster DNS name (dpn-rest-federator-server-N), which is what
+# in-cluster callers use; this one exists only to expose the gateway to callers
+# outside the cluster but inside the private network.
+#
+# The azure-load-balancer-internal annotation is what makes Azure provision a
+# private ILB rather than a public one, so the gateway never gets a public IP.
+# On any non-Azure cluster (minikube) this whole Service is omitted -- keep
+# service.internalLoadBalancer false there.
+#
+# loadBalancerIP is intentionally not set: Azure allocates a free address from
+# the subnet the AKS cluster's ILB is attached to. Set
+# service.loadBalancerIP in an environment's values file if that environment
+# needs a pinned address instead.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.restFederatorServer.name }}-external
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.restFederatorServer.name }}
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    {{- with .Values.restFederatorServer.service.loadBalancerSubnet }}
+    service.beta.kubernetes.io/azure-load-balancer-internal-subnet: {{ . | quote }}
+    {{- end }}
+spec:
+  type: LoadBalancer
+  {{- with .Values.restFederatorServer.service.loadBalancerIP }}
+  loadBalancerIP: <<your specific value>>
+  {{- end }}
+  selector:
+    app: {{ .Values.restFederatorServer.name }}
+  ports:
+    - name: https-external
+      port: {{ .Values.restFederatorServer.service.lbPort | default .Values.restFederatorServer.service.port }}
+      targetPort: {{ .Values.restFederatorServer.service.port }}
+      protocol: TCP
+{{- end }}

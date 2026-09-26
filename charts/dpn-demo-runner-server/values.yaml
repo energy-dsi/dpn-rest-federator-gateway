@@ -1,0 +1,51 @@
+demoRunnerServer:
+  name: dpn-demo-runner-server
+  replicaCount: 1
+  image:
+    repository: <<CONTAINER_REGISTRY_URL>>/dpn-demo-runner-server
+    tag: "latest"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    # No Azure ILB here (minikube/defaults have no cloud load balancer).
+    internalLoadBalancer: false
+    port: 8443
+  # Same Secret the REST Federator gateway reads, so both ends of the
+  # gateway -> backend hop share one value.
+  apiKeySecret:
+    name: dpn-backend-api-key
+    key: apiKey
+  # Inbound HTTPS (server-only TLS). This backend terminates HTTPS with the
+  # keystore.jks from the mounted dpn-tls platform secret and does NOT talk to
+  # Vault. The gateway trusts this certificate with the same DPN truststore it
+  # uses for Vault HTTPS calls; the shared API key authenticates the hop (no
+  # client certificate required).
+  tls:
+    enabled: true
+    # dpn-tls platform secret. Server-only TLS uses just the keystore (this
+    # backend's identity); truststore.jks/ca.crt in the secret are not needed
+    # here since the listener never validates a client certificate.
+    secretName: dpn-tls
+    mountPath: /tls
+    keystorePath: /tls/keystore.jks
+    keystoreType: JKS
+    # Keystore password, read from a Secret (optional: a password-less store also
+    # loads). Sourced from the shared tls-auth-secret (created once by
+    # dpn-tls-cd) instead of an independent copy.
+    passwordSecret:
+      name: tls-auth-secret
+      keystoreKey: KEYSTORE_PASSWORD
+  otel:
+    endpoint: ""
+    protocol: "grpc"
+    insecure: "true"
+    serviceName: "demo-runner-server"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

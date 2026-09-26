@@ -1,0 +1,116 @@
+restFederatorServer:
+  name: dpn-rest-federator-server-1
+  replicaCount: 1
+  image:
+    repository: <<CONTAINER_REGISTRY_URL>>/dpn-rest-federator-server
+    tag: "1.0.0"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    # Azure ILB: exposes this service privately inside the VNet.
+    # loadBalancerIP omitted on purpose - Azure allocates from the ILB subnet.
+    internalLoadBalancer: true
+    port: 8443
+    loadBalancerIP: <<your specific value>>
+    lbPort: 443
+  # Whether this listener terminates HTTPS at all (the identity cert
+  # itself is always sourced from Vault regardless of this toggle).
+  tls:
+    enabled: true
+  # Whether inbound connections must additionally present a client
+  # certificate. Meaningless when tls.enabled is false.
+  mtls:
+    enabled: false
+  backend:
+    baseUrl: https://dpn-demo-runner-server-1:8443
+    apiKeySecret:
+      name: dpn-backend-api-key
+      key: apiKey
+  # Redis is deployed by the separate dpn-redis chart; this points the
+  # gateway at that release's Service.
+  redis:
+    host: dpn-rest-federator-redis-1
+    port: 6379
+    tlsEnabled: false
+    prefix: federator-server-1
+    username: ""
+  producerId: ""
+  # Management Node serving this producer's REST product configuration.
+  managementNode:
+    baseUrl: https://<<your specific value>>
+    requestTimeout: 5
+    cacheTtlSeconds: 60
+  # Identity Provider. Keystore/truststore passwords are not set here — the
+  # Vault secret provider supplies them at startup.
+  idp:
+    clientId: <<your specific value>>
+    authMode: private_key_jwt
+    mtlsEnabled: true
+    jwksUrl: https://<<your specific value>>/realms/management-node/protocol/openid-connect/certs
+    tokenUrl: https://<<your specific value>>/realms/management-node/protocol/openid-connect/token
+    jwtAlgorithm: RS256
+    jwtKeyAlias: federator
+    keystorePath: /tls/keystore.p12
+    truststorePath: /tls/truststore.jks
+  # Properties file naming the shared common-configuration file. Mount it via
+  # a ConfigMap/Secret at this path.
+  propertiesPath: /config/server.properties
+  # Vault. authMethod: token | approle.
+  #   token   — uses VAULT_TOKEN from the secret below.
+  #   approle — uses roleId plus a secret-id read from its own Secret, and
+  #             renews the lease (see vault.approle.* in common-configuration).
+  # tlsEnabled reads the TLS material straight from Vault, which is what
+  # removes the need for a shared fileshare to distribute certificates.
+  vault:
+    uri: https://vault-https.ns-dpn-01.svc.cluster.local:8200
+    truststorePath: /vault/truststore/truststore.jks
+    truststorePassword: ""
+    authMethod: approle
+    tlsEnabled: true
+    tlsBasePath: node-net/client
+    tlsKeystoreAlias: federator
+    keystorePasswordPath: node-net/client/keystore-password#password
+    truststorePasswordPath: node-net/client/truststore-password#password
+    appRole:
+      roleId: "<<your specific value>>"
+      mountPath: approle
+      renewalIntervalSeconds: 3600
+      useSecretIdRef: true
+  otel:
+    endpoint: "http://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317"
+    protocol: "grpc"
+    insecure: "true"
+    serviceName: "rest-federator-server"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+# Azure Key Vault via the secrets-store CSI driver.
+#
+# Disabled by default: it needs real managed-identity, vault and tenant IDs,
+# and the cluster must have the secrets-store CSI driver installed.
+#
+# `objects` declares what to pull. Unlike the federator gateway — which syncs
+# Kafka and blob-storage credentials the REST stack has no use for — only the
+# backend API key is listed here. Add entries as needed.
+#
+# To have the gateway read the API key from the synced Secret, set
+# restFederatorServer.backend.apiKeySecret.name to the secretName below.
+keyvault:
+  enabled: false
+  clientID: <<your specific value>>
+  name: <<your specific value>>
+  tenantId: <<your specific value>>
+  # Kubernetes Secret the CSI driver writes the Key Vault values into.
+  secretName: dpn-rest-federator-server-secrets
+  mountPath: /mnt/secrets
+  objects:
+    # objectName is the Key Vault secret name; key is the Kubernetes Secret key.
+    - objectName: BACKEND-API-KEY
+      key: BACKEND_API_KEY

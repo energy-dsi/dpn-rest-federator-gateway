@@ -1,0 +1,95 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.demoRunnerServer.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.demoRunnerServer.name }}
+spec:
+  replicas: {{ .Values.demoRunnerServer.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.demoRunnerServer.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.demoRunnerServer.name }}
+    spec:
+      containers:
+        - name: {{ .Values.demoRunnerServer.name }}
+          image: "{{ .Values.demoRunnerServer.image.repository }}:{{ .Values.demoRunnerServer.image.tag }}"
+          imagePullPolicy: {{ .Values.demoRunnerServer.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: {{ .Values.demoRunnerServer.service.port }}
+          env:
+            - name: SERVER_PORT
+              value: {{ .Values.demoRunnerServer.service.port | quote }}
+            - name: SERVER_SSL_ENABLED
+              value: {{ .Values.demoRunnerServer.tls.enabled | quote }}
+            # Shared secret the gateway must present. Same Secret the gateway
+            # reads, so both sides stay in step.
+            - name: BACKEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.demoRunnerServer.apiKeySecret.name }}
+                  key: {{ .Values.demoRunnerServer.apiKeySecret.key }}
+            {{- with .Values.demoRunnerServer.tls }}
+            # Inbound HTTPS from the mounted dpn-tls platform secret (keystore.jks
+            # + truststore.jks) — this backend does NOT talk to Vault. The gateway
+            # trusts this cert with the same DPN truststore it uses for Vault HTTPS.
+            - name: TLS_KEYSTORE_PATH
+              value: {{ .keystorePath | quote }}
+            - name: TLS_KEYSTORE_TYPE
+              value: {{ .keystoreType | quote }}
+            - name: TLS_KEYSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .passwordSecret.name }}
+                  key: {{ .passwordSecret.keystoreKey }}
+                  optional: true
+            {{- end }}
+            {{- with .Values.demoRunnerServer.otel }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .protocol | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .insecure | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .serviceName | quote }}
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ .tracesSampler | quote }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ .tracesSamplerArg | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: {{ .Values.demoRunnerServer.service.port }}
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: {{ .Values.demoRunnerServer.service.port }}
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          {{- with .Values.demoRunnerServer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # dpn-tls platform secret: keystore.jks (this backend's identity) +
+            # truststore.jks + ca.crt. Presented on the inbound HTTPS listener;
+            # no Vault involved.
+            - name: dpn-tls
+              mountPath: {{ .Values.demoRunnerServer.tls.mountPath }}
+              readOnly: true
+      volumes:
+        - name: dpn-tls
+          secret:
+            secretName: {{ .Values.demoRunnerServer.tls.secretName }}

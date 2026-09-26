@@ -1,0 +1,46 @@
+{{- if .Values.redisCache.enabled }}
+# Redis cache owned by this chart.
+#
+# Single replica with no PersistentVolume: this is a cache, so its contents are
+# rebuildable and losing them on a restart is acceptable. Add a PVC and a
+# StatefulSet if durable storage is ever required.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.redisCache.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.redisCache.name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.redisCache.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.redisCache.name }}
+    spec:
+      containers:
+        - name: redis
+          image: "{{ .Values.redisCache.image.repository }}:{{ .Values.redisCache.image.tag }}"
+          imagePullPolicy: {{ .Values.redisCache.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: {{ .Values.redisCache.service.port }}
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.redisCache.service.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with .Values.redisCache.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

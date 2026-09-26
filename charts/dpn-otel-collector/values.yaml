@@ -1,0 +1,18 @@
+otelCollector:
+  name: dpn-otel-collector
+  replicaCount: 1
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.105.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    otlpGrpcPort: 4317
+    otlpHttpPort: 4318
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

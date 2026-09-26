@@ -1,0 +1,478 @@
+name: DPN CD - Demo Runner
+
+# Two independent jobs:
+#   1. deploy-server -- the example backend (Deployment + Service)
+#   2. run-client    -- the example consumer, as a one-shot Job
+#
+# A Kubernetes Job's pod spec is immutable once created, so a Job cannot be
+# re-invoked with new arguments -- every run creates a NEW Job object via
+# job.nameSuffix set to github.run_id.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+          - gcp
+
+      imageTag:
+        description: "Demo Runner image tag"
+        required: true
+        type: string
+
+      serverImageRepository:
+        description: "Demo Runner server image path AFTER <<your specific value>>/ (e.g. 1.0.1/dpn-demo-runner-server) — leave blank to use the environment's configured registry (IMAGE_REGISTRY on aws, BASE_REGISTRY on azure)"
+        required: false
+        default: ""
+        type: string
+
+      clientImageRepository:
+        description: "Demo Runner client image path AFTER <<your specific value>>/ (e.g. 1.0.1/dpn-demo-runner-client) — leave blank to use the environment's configured registry (IMAGE_REGISTRY on aws, BASE_REGISTRY on azure)"
+        required: false
+        default: ""
+        type: string
+
+      deployServer:
+        description: "Deploy the demo runner server"
+        required: true
+        type: boolean
+        default: true
+
+      runClient:
+        description: "Run the demo runner client Job"
+        required: true
+        type: boolean
+        default: true
+
+      mpan:
+        description: "Import MPAN (13 digits)"
+        required: true
+        default: "<<your specific value>>1"
+        type: string
+
+      postcode:
+        description: "Postcode"
+        required: true
+        default: "SW1A 1AA"
+        type: string
+
+      assetId:
+        description: "Asset id (a UUID, or 'none' to omit)"
+        required: true
+        default: "none"
+        type: string
+
+      fspId:
+        description: "FSP id (a UUID, or 'none' for a random one)"
+        required: true
+        default: "none"
+        type: string
+
+# organisationName / productName are intentionally NOT workflow inputs.
+# The demo-runner-client chart values files set both to "" (blank = target
+# every subscribed organisation and product). To narrow a run to a specific
+# org/product, edit the chart values file for the environment instead.
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  SERVER_HELM_DIR: dpn-rest-federator-gateway/charts/dpn-demo-runner-server
+  SERVER_RELEASE_NAME: dpn-demo-runner-server
+  CLIENT_HELM_DIR: dpn-rest-federator-gateway/charts/dpn-demo-runner-client
+  CLIENT_RELEASE_NAME: dpn-demo-runner-client
+  VALUES_FILE: values/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.yaml
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-server:
+    name: Helm Deploy - Demo Runner Server
+    if: ${{ inputs.deployServer }}
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Applied Parameters
+        shell: bash
+        run: |
+          echo "environment=${{ inputs.environment }}"
+          echo "cluster=${{ inputs.cluster }}"
+          echo "cloud=${{ inputs.cloud }}"
+          echo "imageTag=${{ inputs.imageTag }}"
+          echo "serverImageRepository=${{ inputs.serverImageRepository }}"
+          echo "clientImageRepository=${{ inputs.clientImageRepository }}"
+          echo "deployServer=${{ inputs.deployServer }}"
+          echo "runClient=${{ inputs.runClient }}"
+          echo "mpan=${{ inputs.mpan }}"
+          echo "postcode=${{ inputs.postcode }}"
+          echo "assetId=${{ inputs.assetId }}"
+          echo "fspId=${{ inputs.fspId }}"
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      - name: Fetch Vault Truststore Password
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # demo-runner-server terminates HTTPS with the same Vault-issued
+          # certificate the gateway uses, so it needs the truststore password
+          # to reach Vault.
+          # TRUSTSTORE-PASSWORD is the canonical, actively-rotated Key Vault
+          # object dpn-tls-cd (dpn-federator-certificate-manager) writes on
+          # every cert renewal. VAULT-TRUSTSTORE-PASSWORD is a bootstrap-only
+          # artifact (vault-tls-bootstrap-cd) that's never touched again once
+          # an environment is stood up, so it can drift stale after rotation.
+          VAULT_TRUSTSTORE_PASSWORD=$(az keyvault secret show \
+            --vault-name "$KEY_VAULT_NAME" \
+            --name TRUSTSTORE-PASSWORD \
+            --query value -o tsv)
+
+          echo "VAULT_TRUSTSTORE_PASSWORD=$VAULT_TRUSTSTORE_PASSWORD" >> "$GITHUB_ENV"
+
+      - name: Provision AWS Secret (Vault Truststore Password)
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # demo-runner-server mounts the same cert-manager-truststore K8s
+          # secret (see dpn-vault-tls-bootstrap-cd.yml) as rest-federator, so
+          # it needs the matching password -- the same repo secret that
+          # workflow uses to build the truststore.jks in the first place.
+          SECRET_NAME="dpn/${{ inputs.environment }}-${{ inputs.cluster }}/demo-runner-server/VAULT_TRUSTSTORE_PASSWORD"
+          if aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
+            echo "Secret $SECRET_NAME already exists — leaving value untouched."
+          else
+            aws secretsmanager create-secret \
+              --name "$SECRET_NAME" \
+              --secret-string "${{ secrets.DPN_TLS_TRUSTSTORE_PASSWORD }}" >/dev/null
+            echo "Created $SECRET_NAME."
+          fi
+
+      - name: Fetch Vault Truststore Password (AWS)
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # AWS Secrets Manager equivalent of the Key Vault lookup above.
+          VAULT_TRUSTSTORE_PASSWORD=$(aws secretsmanager get-secret-value \
+            --secret-id "dpn/${{ inputs.environment }}-${{ inputs.cluster }}/demo-runner-server/VAULT_TRUSTSTORE_PASSWORD" \
+            --query SecretString --output text)
+
+          echo "VAULT_TRUSTSTORE_PASSWORD=$VAULT_TRUSTSTORE_PASSWORD" >> "$GITHUB_ENV"
+
+      ###################################################################
+      # Fetch the AppRole role_id created by
+      # "DPN CD - Certificate Manager Role ID Creation" (component:
+      # rest-federator) -- demo-runner-server shares rest-federator's own
+      # AppRole (see values/aws/*.yaml's secretIdSecretName), it doesn't
+      # have its own.
+      ###################################################################
+      - name: Fetch Vault AppRole Role ID (AWS)
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VAULT_APPROLE_ROLE_ID=$(aws secretsmanager get-secret-value \
+            --secret-id "dpn/${{ inputs.environment }}-${{ inputs.cluster }}/rest-federator/VAULT_APPROLE_ROLE_ID" \
+            --query SecretString --output text)
+
+          echo "VAULT_APPROLE_ROLE_ID=$VAULT_APPROLE_ROLE_ID" >> "$GITHUB_ENV"
+
+      - name: Helm Lint + Dry Run
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_REPO="${{ inputs.serverImageRepository }}"
+          if [ -n "$IMAGE_REPO" ]; then
+            IMAGE_REPO="<<your specific value>>/$IMAGE_REPO"
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            IMAGE_REPO="$IMAGE_REGISTRY/dpn-demo-runner-server"
+          else
+            IMAGE_REPO="$BASE_REGISTRY/dpn-demo-runner-server"
+          fi
+
+          APPROLE_ARGS=()
+          if [ "${{ inputs.cloud }}" = "aws" ]; then
+            APPROLE_ARGS=(--set demoRunnerServer.vault.appRole.roleId="$VAULT_APPROLE_ROLE_ID")
+          fi
+
+          helm lint "$SERVER_HELM_DIR" -f "$SERVER_HELM_DIR/$VALUES_FILE"
+          helm upgrade --install "$SERVER_RELEASE_NAME" "$SERVER_HELM_DIR" \
+            -n "$NAMESPACE" \
+            --set demoRunnerServer.image.repository="$IMAGE_REPO" \
+            --set demoRunnerServer.image.tag="${{ inputs.imageTag }}" \
+            --set demoRunnerServer.vault.truststorePassword="$VAULT_TRUSTSTORE_PASSWORD" \
+            "${APPROLE_ARGS[@]}" \
+            -f "$SERVER_HELM_DIR/$VALUES_FILE" \
+            --dry-run --debug >/dev/null
+
+          echo "Helm dry-run successful"
+
+      - name: Helm Deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE_REPO="${{ inputs.serverImageRepository }}"
+          if [ -n "$IMAGE_REPO" ]; then
+            IMAGE_REPO="<<your specific value>>/$IMAGE_REPO"
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            IMAGE_REPO="$IMAGE_REGISTRY/dpn-demo-runner-server"
+          else
+            IMAGE_REPO="$BASE_REGISTRY/dpn-demo-runner-server"
+          fi
+
+          APPROLE_ARGS=()
+          if [ "${{ inputs.cloud }}" = "aws" ]; then
+            APPROLE_ARGS=(--set demoRunnerServer.vault.appRole.roleId="$VAULT_APPROLE_ROLE_ID")
+          fi
+
+          helm upgrade --install "$SERVER_RELEASE_NAME" "$SERVER_HELM_DIR" \
+            -n "$NAMESPACE" \
+            --set demoRunnerServer.image.repository="$IMAGE_REPO" \
+            --set demoRunnerServer.image.tag="${{ inputs.imageTag }}" \
+            --set demoRunnerServer.vault.truststorePassword="$VAULT_TRUSTSTORE_PASSWORD" \
+            "${APPROLE_ARGS[@]}" \
+            -f "$SERVER_HELM_DIR/$VALUES_FILE" \
+            --debug
+
+          echo "========================================"
+          echo "POST-DEPLOY VERIFICATION"
+          echo "========================================"
+          SERVER_NAME=$(helm get values "$SERVER_RELEASE_NAME" -n "$NAMESPACE" -a -o json | jq -r '.demoRunnerServer.name')
+          if [ -z "$SERVER_NAME" ] || [ "$SERVER_NAME" == "null" ]; then
+            echo "::error::Could not resolve the demo runner server name from Helm values"
+            exit 1
+          fi
+          echo "Demo runner server deployment: ${SERVER_NAME}"
+
+          kubectl rollout status deployment/"${SERVER_NAME}" -n "$NAMESPACE" --timeout=300s
+          kubectl get svc -n "$NAMESPACE" -l app="${SERVER_NAME}"
+          kubectl get pods -n "$NAMESPACE" -l app="${SERVER_NAME}"
+
+  run-client:
+    name: Helm Deploy - Demo Runner Client Job
+    needs: deploy-server
+    if: ${{ inputs.runClient && !cancelled() && (needs.deploy-server.result == 'success' || needs.deploy-server.result == 'skipped') }}
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Applied Parameters
+        shell: bash
+        run: |
+          echo "environment=${{ inputs.environment }}"
+          echo "cluster=${{ inputs.cluster }}"
+          echo "cloud=${{ inputs.cloud }}"
+          echo "imageTag=${{ inputs.imageTag }}"
+          echo "serverImageRepository=${{ inputs.serverImageRepository }}"
+          echo "clientImageRepository=${{ inputs.clientImageRepository }}"
+          echo "deployServer=${{ inputs.deployServer }}"
+          echo "runClient=${{ inputs.runClient }}"
+          echo "mpan=${{ inputs.mpan }}"
+          echo "postcode=${{ inputs.postcode }}"
+          echo "assetId=${{ inputs.assetId }}"
+          echo "fspId=${{ inputs.fspId }}"
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      - name: Helm Deploy - Client Job
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The Run workflow UI won't accept an empty string for a required
+          # string input, so assetId/fspId default to the sentinel 'none' --
+          # translate that back to blank here, which is what the app treats
+          # as "omit assetId" / "generate a random fspId".
+          ASSET_ID="${{ inputs.assetId }}"
+          FSP_ID="${{ inputs.fspId }}"
+          if [ "$ASSET_ID" = "none" ]; then ASSET_ID=""; fi
+          if [ "$FSP_ID" = "none" ]; then FSP_ID=""; fi
+
+          echo "========================================"
+          echo "RUN PARAMETERS"
+          echo "========================================"
+          echo "  org / product: (from chart values -- blank = all subscriptions)"
+          echo "  mpan         : ${{ inputs.mpan }}"
+          echo "  postcode     : ${{ inputs.postcode }}"
+          echo "  asset id     : ${ASSET_ID:-<none>}"
+          echo "  fsp id       : ${FSP_ID:-<random>}"
+
+          # The client reads its mTLS material from Vault too, so it needs
+          # the truststore password to reach Vault, same as the server job.
+          if [ "${{ inputs.cloud }}" = "aws" ]; then
+            SECRET_NAME="dpn/${{ inputs.environment }}-${{ inputs.cluster }}/demo-runner-client/VAULT_TRUSTSTORE_PASSWORD"
+            if ! aws secretsmanager describe-secret --secret-id "$SECRET_NAME" >/dev/null 2>&1; then
+              aws secretsmanager create-secret \
+                --name "$SECRET_NAME" \
+                --secret-string "${{ secrets.DPN_TLS_TRUSTSTORE_PASSWORD }}" >/dev/null
+              echo "Created $SECRET_NAME."
+            fi
+
+            VAULT_TRUSTSTORE_PASSWORD=$(aws secretsmanager get-secret-value \
+              --secret-id "$SECRET_NAME" \
+              --query SecretString --output text)
+
+            # Shares rest-federator's own AppRole role_id (see
+            # values/aws/*.yaml's secretIdSecretName) -- the client doesn't
+            # have its own.
+            VAULT_APPROLE_ROLE_ID=$(aws secretsmanager get-secret-value \
+              --secret-id "dpn/${{ inputs.environment }}-${{ inputs.cluster }}/rest-federator/VAULT_APPROLE_ROLE_ID" \
+              --query SecretString --output text)
+          else
+            # TRUSTSTORE-PASSWORD is the canonical, actively-rotated Key Vault
+            # object dpn-tls-cd (dpn-federator-certificate-manager) writes on
+            # every cert renewal. VAULT-TRUSTSTORE-PASSWORD is a bootstrap-only
+            # artifact (vault-tls-bootstrap-cd) that's never touched again once
+            # an environment is stood up, so it can drift stale after rotation.
+            VAULT_TRUSTSTORE_PASSWORD=$(az keyvault secret show \
+              --vault-name "$KEY_VAULT_NAME" \
+              --name TRUSTSTORE-PASSWORD \
+              --query value -o tsv)
+          fi
+
+          echo "========================================"
+          echo "HELM DEPLOY - CLIENT JOB"
+          echo "========================================"
+          IMAGE_REPO="${{ inputs.clientImageRepository }}"
+          if [ -n "$IMAGE_REPO" ]; then
+            IMAGE_REPO="<<your specific value>>/$IMAGE_REPO"
+          elif [ "${{ inputs.cloud }}" = "aws" ]; then
+            IMAGE_REPO="$IMAGE_REGISTRY/dpn-demo-runner-client"
+          else
+            IMAGE_REPO="$BASE_REGISTRY/dpn-demo-runner-client"
+          fi
+
+          APPROLE_ARGS=()
+          if [ "${{ inputs.cloud }}" = "aws" ]; then
+            APPROLE_ARGS=(--set job.vault.appRole.roleId="$VAULT_APPROLE_ROLE_ID")
+          fi
+
+          # nameSuffix makes each run a distinct Job object; a Job's pod spec
+          # cannot be changed in place.
+          helm lint "$CLIENT_HELM_DIR" -f "$CLIENT_HELM_DIR/$VALUES_FILE"
+          helm upgrade --install "$CLIENT_RELEASE_NAME" "$CLIENT_HELM_DIR" \
+            -n "$NAMESPACE" \
+            --set job.image.repository="$IMAGE_REPO" \
+            --set job.image.tag="${{ inputs.imageTag }}" \
+            --set job.vault.truststorePassword="$VAULT_TRUSTSTORE_PASSWORD" \
+            --set job.nameSuffix="${{ github.run_id }}" \
+            --set job.env.mpan="${{ inputs.mpan }}" \
+            --set job.env.postcode="${{ inputs.postcode }}" \
+            --set job.env.assetId="$ASSET_ID" \
+            --set job.env.fspId="$FSP_ID" \
+            "${APPROLE_ARGS[@]}" \
+            -f "$CLIENT_HELM_DIR/$VALUES_FILE" \
+            --debug
+
+          JOB_BASE=$(helm get values "$CLIENT_RELEASE_NAME" -n "$NAMESPACE" -a -o json | jq -r '.job.name')
+          JOB_NAME="${JOB_BASE}-${{ github.run_id }}"
+          echo "Job created: ${JOB_NAME}"
+
+          echo "========================================"
+          echo "WAIT FOR JOB COMPLETION"
+          echo "========================================"
+          kubectl wait --for=condition=complete --timeout=600s \
+            job/"${JOB_NAME}" -n "$NAMESPACE" && JOB_RESULT=complete || JOB_RESULT=failed
+
+          echo "========================================"
+          echo "DEMO RUNNER CLIENT OUTPUT"
+          echo "========================================"
+          kubectl logs job/"${JOB_NAME}" -n "$NAMESPACE" --tail=-1 || \
+            echo "::warning::Could not retrieve Job logs"
+
+          if [ "$JOB_RESULT" != "complete" ]; then
+            echo "::error::Demo runner client Job did not complete successfully"
+            kubectl describe job/"${JOB_NAME}" -n "$NAMESPACE" || true
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "DEMO RUNNER CLIENT RUN COMPLETE"
+          echo "========================================"

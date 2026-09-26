@@ -1,0 +1,577 @@
+# CI pipeline for dpn-rest-federator-gateway (server + client)
+#
+# Builds, in order:
+#   1. rest-federator-common     -> mvn install (common/pom.xml)
+#      Vendored DPN plumbing: config loading, mTLS, IDP tokens, Management Node.
+#   2. rest-federator-client     -> mvn clean install (client/pom.xml)
+#      Installed, not just packaged, so demo-runner-client can resolve it.
+#   3. rest-federator-server     -> mvn clean verify (root pom.xml; tests,
+#      coverage and Sonar happen here)
+# Then packages both jars and builds/pushes/signs/scans their images.
+#
+# The demo/ example applications (demo-runner-server, demo-runner-client) are
+# NOT built here -- they have their own pipeline, demo-runner-ci.yml.
+#
+# NOTE: client/ and demo/* are independent Maven projects, not reactor modules
+# (the root pom must stay packaging=jar for the server image, and Maven only
+# allows <modules> on packaging=pom). Hence -f <path>/pom.xml rather than -pl.
+
+trigger: none
+
+pool:
+  name: <<YOUR AGENT POOL>>
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: sc-dpn-dev-001
+  values:
+    - sc-dpn-dev-001
+    - sc-dpn-dev-002
+    - sc-dpn-test-001
+    - sc-dpn-test-002
+    - sc-dpn-pdev-ppd-001
+    - sc-dpn-ptest-ppd-001
+    - sc-dpn-puat-ppd-001
+- name: environment
+  type: string
+  default: dev
+  displayName: Environment Name
+  values:
+    - dev
+    - devtest
+    - test
+    - pdev
+    - ptest
+    - puat
+- name: cluster
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+    - dpn02
+
+variables:
+- group: dockerhub-creds
+- group: federator-ci
+- group: soner_report
+- group: fossa_scan
+- group: jfrog
+
+- name: REST_IMAGE
+  value: dpn-rest-federator-server
+
+- name: IMAGE_TAG
+  value: $(Build.BuildId)
+
+- name: REST_SRC
+  value: $(Pipeline.Workspace)/s/dpn-rest-federator-gateway
+
+- name: PARAMETERS_FILE
+  value: $(REST_SRC)/.pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json
+
+- name: CLOC_EXCLUDES
+  value: "target,.git,node_modules"
+
+- name: PROJECT_NAME
+  value: $(Build.Repository.Name)
+  
+- name: PUBLISHED_DOCKER_IMAGE
+  value: "$(BASE_REGISTRY)/$(PROJECT_NAME):$(IMAGE_TAG)"
+
+stages:
+
+# =====================================================
+# Stage 1 — Checkmarx
+# =====================================================
+- stage: Checkmarx_Scan
+  displayName: CheckMarx One Scan
+  jobs:
+  - job: cxOneScan
+    steps:
+    - checkout: self
+
+    - template: ./CxOneScan.yml
+      parameters:
+        scanType: ''
+        cxoneserviceName: 'checkmarxOne-sc'
+        cxoneProjectName: $(Build.Repository.Name)
+        cxoneProjectGroup: 'AZ-APP-CheckmarxOne-NESO'
+        cxoneTenantName: 'neso'
+        excludeFolders: '!.github'
+        appName: 'Checkmarxone'
+
+# =====================================================
+# Stage 1b — FOSSA (runs in parallel with Checkmarx)
+# =====================================================
+- stage: Fossa_Scan
+  displayName: FOSSA License & Dependency Scan
+  jobs:
+  - job: fossaScan
+    steps:
+    - checkout: self
+
+    - template: ./FossaScan.yml
+      parameters:
+        fossaProjectName: $(Build.Repository.Name)
+        failOnIssues: true
+
+# =====================================================
+# Stage 2 — Unit Tests + Sonar (dpn-rest-federator-gateway)
+# =====================================================
+- stage: UnitTests
+  displayName: Run Unit Tests
+  dependsOn:
+  - Checkmarx_Scan
+  - Fossa_Scan
+  jobs:
+  - job: RunTests
+    displayName: Maven Unit Tests
+    steps:
+    - checkout: self
+      path: s/dpn-rest-federator-gateway
+
+    - script: |
+        CONFIG_FILE="$(PARAMETERS_FILE)"
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "##[error]Config file not found: $(PARAMETERS_FILE)"
+          exit 1
+        fi
+        for param in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+          value=$(jq -r ".\"$param\"" "$CONFIG_FILE")
+          echo "##vso[task.setvariable variable=$param]$value"
+        done
+      displayName: Load Environment Config
+
+    - task: JavaToolInstaller@0
+      displayName: Set Java 21
+      inputs:
+        versionSpec: '21'
+        jdkArchitectureOption: x64
+        jdkSourceOption: PreInstalled
+
+    - script: |
+        mkdir -p ~/.m2
+        cat <<EOF > ~/.m2/settings.xml
+        <settings>
+          <servers>
+            <server>
+              <id>github</id>
+              <username>${GITHUB_MAVEN_USERNAME}</username>
+              <password>${GITHUB_MAVEN_TOKEN}</password>
+            </server>
+          </servers>
+        </settings>
+        EOF
+      displayName: Configure Maven settings
+      env:
+        GITHUB_MAVEN_TOKEN: $(GITHUB_MAVEN_TOKEN)
+
+    - script: |
+        echo "$(DOCKERHUB_PASSWORD)" | docker login -u "$(DOCKERHUB_USERNAME)" --password-stdin
+      displayName: DockerHub login
+
+    # One reactor build: the aggregator orders common -> server -> client ->
+    # demo. Installed so the client jar is resolvable by the demo-runner
+    # pipeline and by anything else importing it.
+    - task: Maven@4
+      displayName: 'Run mvn clean install (all modules)'
+      inputs:
+        mavenPomFile: $(REST_SRC)/pom.xml
+        goals: clean install
+        options: '-f $(REST_SRC)/pom.xml'
+        publishJUnitResults: true
+        testResultsFiles: '**/surefire-reports/*.xml'
+
+    - script: |
+        sudo apt-get update
+        sudo apt-get install -y cloc
+      displayName: Install CLOC
+
+    - script: |
+        cloc "$(REST_SRC)" --exclude-dir=$(CLOC_EXCLUDES) --json --out=cloc-report.json
+      displayName: 'Run CLOC (JSON)'
+
+    - script: |
+        cloc "$(REST_SRC)" --exclude-dir=$(CLOC_EXCLUDES) --xml --out=cloc-report.xml
+      displayName: 'Run CLOC (XML)'
+
+    - script: |
+        mkdir -p $(Build.ArtifactStagingDirectory)/cloc-reports
+        cp cloc-report.xml cloc-report.json $(Build.ArtifactStagingDirectory)/cloc-reports
+      displayName: 'Prepare CLOC artifacts'
+
+    - task: PublishCodeCoverageResults@2
+      displayName: Publish JaCoCo Coverage
+      inputs:
+        codeCoverageTool: JaCoCo
+        summaryFileLocation: '$(REST_SRC)/server/target/site/jacoco/jacoco.xml'
+        reportDirectory: '$(REST_SRC)/server/target/site/jacoco'
+        failIfCoverageEmpty: true
+
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish JUnit Reports Folder'
+      inputs:
+        targetPath: $(REST_SRC)/server/target/surefire-reports/
+        artifact: JUnit-reports
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish CLOC Report'
+      inputs:
+        pathtoPublish: '$(Build.ArtifactStagingDirectory)/cloc-reports'
+        artifactName: 'cloc-reports'
+
+    # No-op warning if the REST pom has no SBOM plugin yet.
+    - script: |
+        mkdir sbom-output
+        cp $(REST_SRC)/server/target/*-sbom.json sbom-output/ 2>/dev/null || echo "No SBOM file found"
+      displayName: Copy SBOM file
+
+    - task: PublishPipelineArtifact@1
+      displayName: Publish SBOM
+      inputs:
+        targetPath: sbom-output
+        artifact: SBOM
+
+    - task: DownloadSecureFile@1
+      name: sonarCert
+      inputs:
+        secureFile: sonarcert.pem
+      displayName: 'Download SonarQube Cert'
+
+    - bash: |
+        echo "##vso[task.setvariable variable=NODE_EXTRA_CA_CERTS]$(sonarCert.secureFilePath)"
+      displayName: "Set NODE CA certs"
+
+    - task: AzureKeyVault@2
+      inputs:
+        azureSubscription: '${{ parameters.ServiceConnection }}'
+        keyVaultName: '$(KEY_VAULT_NAME)'
+        secretsFilter: 'SONAR-KEYSTORE-PWD'
+        RunAsPreJob: false
+      displayName: 'Get SonarQube Keystore Password'
+
+    - script: |
+        keytool -import -trustcacerts \
+          -file $(sonarCert.secureFilePath) \
+          -keystore $(Agent.TempDirectory)/sonar-truststore.jks \
+          -storepass $(SONAR-KEYSTORE-PWD) \
+          -alias sonarqube \
+          -noprompt
+      displayName: Import SonarQube Certs
+
+    # Analyzes dpn-rest-federator-gateway (self repo).
+    - task: SonarQubePrepare@7
+      displayName: 'Prepare SonarQube Analysis'
+      inputs:
+        SonarQube: sonar-neso-sc
+        scannerMode: CLI
+        configMode: manual
+        cliProjectKey: $(Build.Repository.Name)
+        cliProjectName: $(Build.Repository.Name)
+        cliSources: $(REST_SRC)
+        extraProperties: |
+          sonar.sources=$(REST_SRC)/common/src,$(REST_SRC)/server/src,$(REST_SRC)/client/src
+          sonar.java.binaries=$(REST_SRC)/common/target/classes,$(REST_SRC)/server/target/classes,$(REST_SRC)/client/target/classes
+          sonar.coverage.jacoco.xmlReportPaths=$(REST_SRC)/common/target/site/jacoco/jacoco.xml,$(REST_SRC)/server/target/site/jacoco/jacoco.xml,$(REST_SRC)/client/target/site/jacoco/jacoco.xml
+          sonar.scanner.skipCertificateCheck=true
+          sonar.branch.name=$(Build.SourceBranchName)
+
+    - task: SonarQubeAnalyze@7
+      displayName: 'Sonar Scan task'
+      env:
+        SONAR_SCANNER_OPTS: '-Djavax.net.ssl.trustStore=$(Agent.TempDirectory)/sonar-truststore.jks -Djavax.net.ssl.trustStorePassword=$(SONAR-KEYSTORE-PWD)'
+      inputs:
+        jdkversion: 'JAVA_HOME'
+
+    - task: SonarQubePublish@7
+      displayName: 'Publish SonarQube Results'
+      inputs:
+        pollingTimeoutSec: '600'
+
+    - task: UsePythonVersion@0
+      displayName: 'Set up Python 3'
+      inputs:
+        versionSpec: '3.x'
+
+    - bash: |
+        pip install reportlab
+      displayName: 'Install Python libraries'
+
+    - task: Bash@3
+      displayName: 'Download SonarQube Metrics JSON'
+      # Non-blocking: this only feeds the supplementary PDF report below, not
+      # the actual quality gate (SonarQubeAnalyze/SonarQubePublish above already
+      # ran). A 403 here means the sonar_token service account hasn't been
+      # granted permissions on this SonarQube project yet -- a SonarQube-side
+      # admin action, not something a pipeline change can fix.
+      continueOnError: true
+      env:
+        SQ_URL: "$(sonar_url)"
+        SQ_TOKEN: "$(sonar_token)"
+        SQ_PROJECT: "$(Build.Repository.Name)"
+        SQ_BRANCH: "$(Build.SourceBranchName)"
+      inputs:
+        targetType: inline
+        script: |
+          mkdir -p $(Pipeline.Workspace)/s/sonarReport
+
+          API_LIST=(
+            "/api/measures/search_history?component=${SQ_PROJECT}&branch=${SQ_BRANCH}&metrics=coverage,duplicated_lines_density,bugs,vulnerabilities,code_smells,sqale_rating,reliability_rating,security_rating"
+            "/api/measures/component?component=${SQ_PROJECT}&branch=${SQ_BRANCH}&metricKeys=alert_status,quality_gate_details,sqale_rating,reliability_rating,security_rating,sqale_debt_ratio,bugs,new_bugs,vulnerabilities,new_vulnerabilities,code_smells,new_code_smells,violations,new_violations,accepted_issues,coverage,new_coverage,line_coverage,branch_coverage,uncovered_lines,uncovered_conditions,duplicated_lines_density,new_duplicated_lines_density,duplicated_lines,duplicated_blocks,duplicated_files,complexity,cognitive_complexity,ncloc,lines,files,classes,functions,statements,security_hotspots,new_security_hotspots,security_hotspots_reviewed,new_security_hotspots_reviewed"
+            "/api/measures/search_history?component=${SQ_PROJECT}&branch=${SQ_BRANCH}&metrics=security_rating"
+          )
+
+          FILE_LIST=(
+            "sq_metrics_history.json"
+            "sq_project_snapshot.json"
+            "sq_security_rating_history.json"
+          )
+
+          for index in "${!API_LIST[@]}"; do
+            API="${API_LIST[$index]}"
+            FILE="${FILE_LIST[$index]}"
+            FULL_URL="${SQ_URL}${API}"
+            OUTPUT_PATH="$(Pipeline.Workspace)/s/sonarReport/${FILE}"
+            curl -k -L -s -u "${SQ_TOKEN}:" "$FULL_URL" -o "$OUTPUT_PATH"
+            if grep -q '"errors"' "$OUTPUT_PATH"; then
+              echo "##[error]SonarQube API error for branch '${SQ_BRANCH}':"
+              cat "$OUTPUT_PATH"
+              exit 1
+            fi
+          done
+
+    - script: |
+        python $(REST_SRC)/.pipelines/azure-pipelines/generate_sonar_pdf.py \
+          "$(Pipeline.Workspace)/s/sonarReport" \
+          "SonarQube_Report-$(Build.SourceBranchName).pdf"
+      displayName: 'Generate SonarQube PDF Report'
+      continueOnError: true
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish SonarQube PDF Report'
+      continueOnError: true
+      inputs:
+        PathtoPublish: '$(Pipeline.Workspace)/s/sonarReport'
+        ArtifactName: 'sonarqube-report'
+        publishLocation: 'Container'
+
+# =====================================================
+# Stage 3 — Build + Push + Sign + Scan
+# =====================================================
+- stage: Build
+  dependsOn: UnitTests
+  condition: succeeded()
+
+  jobs:
+  - job: BuildImages
+    timeoutInMinutes: 25
+    steps:
+    - checkout: self
+      path: s/dpn-rest-federator-gateway
+
+    - script: |
+        CONFIG_FILE="$(PARAMETERS_FILE)"
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "##[error]Config file not found: $(PARAMETERS_FILE)"
+          exit 1
+        fi
+        for param in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+          value=$(jq -r ".\"$param\"" "$CONFIG_FILE")
+          echo "##vso[task.setvariable variable=$param]$value"
+        done
+      displayName: Load Environment Config
+
+    - task: AzureCLI@2
+      displayName: Login ACR
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az acr login --name $(CONTAINER_REGISTRY)
+
+    - task: JavaToolInstaller@0
+      displayName: Set Java 21
+      inputs:
+        versionSpec: '21'
+        jdkArchitectureOption: x64
+        jdkSourceOption: PreInstalled
+
+    # Vendored DPN platform plumbing. Installed first so the gateway, client
+    # and demo modules can resolve it from the local repository.
+    - task: Maven@4
+      displayName: 'Install all modules'
+      inputs:
+        mavenPomFile: $(REST_SRC)/pom.xml
+        goals: clean install
+        options: '-DskipTests -f $(REST_SRC)/pom.xml'
+        publishJUnitResults: false
+
+    # Derives JAR_NAME from the actual built jar (artifactId-version).
+    - script: |
+        REST_JAR_PATH=$(ls $(REST_SRC)/server/target/*.jar 2>/dev/null | grep -v -E 'sources|javadoc|\.original$' | head -n1)
+        if [ -z "$REST_JAR_PATH" ]; then
+          echo "##[error]No built jar found under $(REST_SRC)/server/target/"
+          exit 1
+        fi
+        REST_JAR_NAME=$(basename "$REST_JAR_PATH" .jar)
+        echo "##vso[task.setvariable variable=JAR_NAME]$REST_JAR_NAME"
+        echo "Resolved JAR_NAME: $REST_JAR_NAME (from $REST_JAR_PATH)"
+      displayName: 'Resolve REST jar name'
+
+    - script: |
+        docker build --no-cache --pull --provenance=false --sbom=false \
+          --build-arg JAR_NAME=$(JAR_NAME) \
+          -f $(REST_SRC)/docker/Dockerfile.rest-server \
+          -t $(CONTAINER_REGISTRY_URL)/$(REST_IMAGE):$(IMAGE_TAG) \
+          $(REST_SRC)
+      displayName: Build REST Server Image
+
+    - script: |
+        docker push $(CONTAINER_REGISTRY_URL)/$(REST_IMAGE):$(IMAGE_TAG)
+      displayName: Tag and Push Image
+
+    # ------------------------------------------------------------
+    # REST CLIENT — library jar, not a deployable container.
+    #
+    # rest-federator-client has no main class and nothing to run: it is a
+    # library other applications (demo-runner-client) import. It is not built
+    # as a container image here -- consumers either resolve it from the Maven
+    # reactor build directly (as demo-runner-ci.yml does) or download this
+    # published jar artifact. There is deliberately no image build/push/sign/
+    # scan for it, since no chart or pipeline pulls such an image.
+    # ------------------------------------------------------------
+    - script: |
+        REST_CLIENT_JAR_PATH=$(ls $(REST_SRC)/client/target/*.jar 2>/dev/null | grep -v -E 'sources|javadoc|\.original$' | head -n1)
+        if [ -z "$REST_CLIENT_JAR_PATH" ]; then
+          echo "##[error]No built client jar found under $(REST_SRC)/client/target/"
+          exit 1
+        fi
+        REST_CLIENT_JAR_NAME=$(basename "$REST_CLIENT_JAR_PATH" .jar)
+        echo "##vso[task.setvariable variable=CLIENT_JAR_NAME]$REST_CLIENT_JAR_NAME"
+        echo "Resolved CLIENT_JAR_NAME: $REST_CLIENT_JAR_NAME (from $REST_CLIENT_JAR_PATH)"
+      displayName: 'Resolve REST client jar name'
+
+    # Publish the client jar so downstream pipelines/consumers can pick it up
+    # without rebuilding it.
+    - task: PublishPipelineArtifact@1
+      displayName: 'Publish rest-federator-client jar'
+      inputs:
+        targetPath: $(REST_SRC)/client/target/$(CLIENT_JAR_NAME).jar
+        artifact: rest-federator-client-jar
+
+    #-----------------------------------------
+    # Image Signing with Sigstore/Cosign
+    #-----------------------------------------
+    - script: |
+        REST_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $(CONTAINER_REGISTRY_URL)/$(REST_IMAGE):$(IMAGE_TAG))
+        echo $REST_DIGEST > rest-image-digest.txt
+        echo "##vso[task.setvariable variable=REST_IMAGE_DIGEST]$REST_DIGEST"
+      displayName: Capture Image Digest
+
+    - task: DownloadSecureFile@1
+      name: cosignKey
+      inputs:
+        secureFile: cosign.key
+      displayName: 'Download Cosign Key'
+
+    - script: |
+        curl -sSL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o cosign
+        chmod +x cosign
+        sudo mv cosign /usr/local/bin/
+      displayName: Install Cosign
+
+    - task: AzureKeyVault@2
+      inputs:
+        azureSubscription: '${{ parameters.ServiceConnection }}'
+        keyVaultName: '$(KEY_VAULT_NAME)'
+        secretsFilter: 'COSIGN-PASSWORD'
+        RunAsPreJob: false
+
+    - script: |
+        cat > /tmp/signing-config.json << 'EOF'
+        {
+          "mediaType": "application/vnd.dev.sigstore.signingconfig.v0.2+json",
+          "caUrls": [],
+          "oidcUrls": [],
+          "rekorTlogUrls": [],
+          "tsaUrls": []
+        }
+        EOF
+        cosign sign --key $(cosignKey.secureFilePath) --signing-config /tmp/signing-config.json $(REST_IMAGE_DIGEST)
+      env:
+        COSIGN_PASSWORD: $(COSIGN-PASSWORD)
+      displayName: Sign Image
+
+    - publish: rest-image-digest.txt
+      artifact: rest-image-digest
+      displayName: Publish Digest File
+
+    # ---------------------------------------
+    # JFrog X-Ray Set Up
+    # ---------------------------------------
+    - task: DownloadSecureFile@1
+      displayName: Jfrog Certificate Installation
+      name: caCertificate
+      inputs:
+        secureFile: <<your specific value>>.crt
+        retryCount: '1'
+
+    - script: |
+        sudo chown root:root $(caCertificate.secureFilePath)
+        sudo chmod a+r $(caCertificate.secureFilePath)
+        sudo ln -s -f -t /etc/ssl/certs/ $(caCertificate.secureFilePath)
+        sudo cp $(caCertificate.secureFilePath) /usr/share/ca-certificates/
+        sudo apt-get -y install zip
+      displayName: Install JFrog Certificate
+
+    - script: |
+        curl -fL https://install-cli.jfrog.io | sh
+        jf --version
+      displayName: Update JFrog CLI
+
+    - script: |
+        sleep 30
+      displayName: Wait for Xray indexing
+
+    # ---------------------------------------
+    #  X-Ray Scan REST Server Image
+    #  Tag-based imageName, deliberately not digest-based
+    #  (repo@sha256:...). On a sibling pipeline (federator-ci), digest
+    #  references caused jf docker scan to pull/export the image as a
+    #  manifest-list that JFrog Xray Indexer 3.101.5 could not parse
+    #  ("manifest does not contain annotations"), silently falling back
+    #  to a generic tar indexer and reporting a false "No vulnerable
+    #  components found". Tag-based scanning is safe here because
+    #  IMAGE_TAG = $(Build.BuildId), unique per pipeline run.
+    # ---------------------------------------
+    - script: mkdir -p $(Pipeline.Workspace)/s/xrayReport
+      displayName: 'Create Xray report output directory'
+
+    - task: JfrogCliV2@1
+      displayName: 'Jfrog Image X-Ray Scan'
+      inputs:
+        jfrogPlatformConnection: 'xray-scan'
+        command: |
+          jf config show
+          jf rt ping
+          jf docker scan $(CONTAINER_REGISTRY_URL)/$(REST_IMAGE):$(IMAGE_TAG) --extended-table
+          jf docker scan $(CONTAINER_REGISTRY_URL)/$(REST_IMAGE):$(IMAGE_TAG) --extended-table > $(Pipeline.Workspace)/s/xrayReport/xray-report.txt
+          jf docker scan $(CONTAINER_REGISTRY_URL)/$(REST_IMAGE):$(IMAGE_TAG) --vuln=true --fail=true --format=json > $(Pipeline.Workspace)/s/xrayReport/xray-report.json
+
+    - task: PublishBuildArtifacts@1
+      displayName: "Publish X-Ray Scan Report"
+      condition: succeededOrFailed()
+      inputs:
+        PathtoPublish: "$(Pipeline.Workspace)/s/xrayReport"
+        ArtifactName: "xray-report"
+        publishLocation: "Container"
+
+    - script: |
+        echo "Cleaning up images created by pipeline on agent..."
+        docker rmi $(CONTAINER_REGISTRY_URL)/$(REST_IMAGE):$(IMAGE_TAG) || true
+        echo "Cleanup completed."
+      displayName: Cleanup Docker Images on Agent
+      condition: always()

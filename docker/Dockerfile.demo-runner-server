@@ -1,0 +1,32 @@
+# Dockerfile for demo/demo-runner-server (EXAMPLE backend).
+#
+# Deployed as its own container, separate from the REST Federator gateway. The
+# gateway forwards authorized requests here; this service authenticates the
+# gateway with the shared API key supplied via BACKEND_API_KEY.
+#
+# This is a Spring Boot repackaged ("fat") jar -- dependencies are nested inside
+# BOOT-INF/lib/*.jar, so it MUST be launched with `java -jar`, not a flat -cp.
+
+FROM eclipse-temurin:21-jre AS demo-runner-server
+
+# Full upgrade, not just openssl/libssl3t64 -- JFrog Xray flags CVEs across
+# the base image's whole OS package set (util-linux, login, rust-coreutils,
+# etc.), not only TLS libraries.
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /app/ && \
+	groupadd appgroup && \
+	useradd -Mg appgroup demo-runner-service && \
+	chown -R :appgroup /app/
+
+WORKDIR /app
+ARG JAR_NAME
+COPY demo/demo-runner-server/target/${JAR_NAME}.jar /app/app.jar
+USER demo-runner-service
+
+EXPOSE 8443
+
+# Spring Boot repackaged jar -- must use -jar, not -cp.
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

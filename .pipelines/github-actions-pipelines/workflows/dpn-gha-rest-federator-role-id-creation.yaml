@@ -1,0 +1,305 @@
+name: DPN CD - REST Federator Role ID Creation (AWS Vault AppRole Setup)
+
+# =============================================================================
+# Vault AppRole Setup — REST Federator Gateway (multi-cloud)
+#
+# Mirrors dpn-certificate-manager-role-id-creation.yml exactly, adapted for
+# the rest-federator AppRole/policy instead of certificate-manager's.
+#
+# Configures the rest-federator AppRole in a running Vault and publishes the
+# credential so the chart's SecretProviderClass / Helm deploy can consume it.
+#
+# In ONE run (against the target env's in-cluster Vault):
+#   - runs vault/setup-approle.sh in the Vault pod (admin token from the cloud
+#     secrets backend):
+#       * enables the `approle` auth method
+#       * writes the `rest-federator-policy`
+#       * creates/updates the `rest-federator` AppRole role
+#   - writes the generated secret-id to the secrets backend as
+#     VAULT_APPROLE_SECRET_ID:
+#       Azure: Key Vault secret, +355-day expiry (governance policy requirement)
+#       AWS:   Secrets Manager secret at dpn/<environment>-<cluster>/rest-federator/VAULT_APPROLE_SECRET_ID
+#     dpn-rest-federator-cd.yml's Helm Deploy step fetches VAULT_APPROLE_ROLE_ID
+#     from the same prefix and passes it via --set at deploy time -- the
+#     checked-in values file placeholder never needs manual editing.
+#   - also writes VAULT_APPROLE_ROLE_ID to the same prefix (role_id is not
+#     sensitive, but storing it lets the deploy workflow fetch it
+#     programmatically instead of requiring a human to copy/paste it).
+#   - prints the role-id in the run summary too, for visibility/Azure parity.
+#
+# The Vault admin/root token is read at runtime from the cloud secrets backend
+# (VAULT-TOKEN / VAULT_TOKEN); the Vault pod is resolved dynamically. No token is
+# hardcoded.
+#
+# Prerequisites:
+#   1. vault-https deployed + UNSEALED in the target cluster.
+#   2. Admin/root token in the secrets backend as 'VAULT-TOKEN' (Azure) or
+#      dpn/<environment>-<cluster>/vault-https/VAULT_TOKEN (AWS).
+#   3. KV v2 enabled at 'pki-client'.
+#
+# Scope note: only 'dev'/'test' environments have config JSON under .github/config.
+#
+# GCP is a future plan — not yet implemented.
+# =============================================================================
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+          - gcp
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+  VAULT_FULL_NAME: dpn-vault-https
+  SETUP_SCRIPT: dpn-rest-federator-gateway/scripts/vault/setup-approle.sh
+  POLICY_FILE: dpn-rest-federator-gateway/scripts/vault/rest-federator-policy.hcl
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  setup-approle:
+    name: Configure AppRole + publish role_id/secret_id
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+
+          echo "Loading config from ${PARAMETERS_FILE}"
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+            echo "Set ${key}"
+          done
+
+          echo "SECRET_PREFIX=dpn/${{ inputs.environment }}-${{ inputs.cluster }}" >> "$GITHUB_ENV"
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      ###################################################################
+      # RESOLVE VAULT POD (cloud-agnostic)
+      ###################################################################
+      - name: Resolve Vault Pod
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          POD=$(kubectl get pod -n "$NAMESPACE" -l app="$VAULT_FULL_NAME" \
+            -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "$POD" ]; then
+            echo "::error::No vault pod found (app=$VAULT_FULL_NAME) in namespace $NAMESPACE."
+            echo "::group::DEBUG - pods in namespace"
+            kubectl get pods -n "$NAMESPACE" -o wide || true
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "VAULT_POD=$POD" >> "$GITHUB_ENV"
+          echo "Using vault pod: $POD"
+
+      ###################################################################
+      # FETCH ADMIN TOKEN FROM SECRETS BACKEND
+      ###################################################################
+      - name: Fetch Admin Token from Key Vault
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VAULT_TOKEN=$(az keyvault secret show \
+            --vault-name "$KEY_VAULT_NAME" \
+            --name VAULT-TOKEN \
+            --query "value" -o tsv 2>/dev/null || true)
+          if [ -z "$VAULT_TOKEN" ]; then
+            echo "::error::VAULT-TOKEN not found in Key Vault $KEY_VAULT_NAME."
+            exit 1
+          fi
+          echo "::add-mask::$VAULT_TOKEN"
+          echo "VAULT_TOKEN=$VAULT_TOKEN" >> "$GITHUB_ENV"
+          echo "Admin token retrieved from Key Vault."
+
+      - name: Fetch Admin Token from Secrets Manager
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VAULT_TOKEN=$(aws secretsmanager get-secret-value \
+            --secret-id "$SECRET_PREFIX/vault-https/VAULT_TOKEN" \
+            --query "SecretString" --output text 2>/dev/null || true)
+          if [ -z "$VAULT_TOKEN" ]; then
+            echo "::error::$SECRET_PREFIX/vault-https/VAULT_TOKEN not found in Secrets Manager."
+            exit 1
+          fi
+          echo "::add-mask::$VAULT_TOKEN"
+          echo "VAULT_TOKEN=$VAULT_TOKEN" >> "$GITHUB_ENV"
+          echo "Admin token retrieved from Secrets Manager."
+
+      ###################################################################
+      # RUN SETUP (cloud-agnostic — kubectl only)
+      ###################################################################
+      - name: Copy Setup Script + Policy into Pod
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          kubectl cp "$SETUP_SCRIPT" "$NAMESPACE/$VAULT_POD:/tmp/setup-approle.sh"
+          kubectl cp "$POLICY_FILE"  "$NAMESPACE/$VAULT_POD:/tmp/rest-federator-policy.hcl"
+
+      - name: Run setup-approle.sh (output captured, not logged)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # setup-approle.sh prints the secret-id, so capture its output into a
+          # variable and never echo it. Parse role_id (1st UUID) + secret_id (2nd).
+          UUID='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+          SETUP_OUT=$(kubectl exec -n "$NAMESPACE" "$VAULT_POD" -- sh -c "
+            tr -d '\r' < /tmp/setup-approle.sh > /tmp/sa.sh &&
+            VAULT_ADDR='https://127.0.0.1:8200' VAULT_SKIP_VERIFY='true' VAULT_TOKEN='$VAULT_TOKEN' sh /tmp/sa.sh
+          " 2>&1 || true)
+          ROLE_ID=$(printf '%s\n' "$SETUP_OUT"   | grep -ioE "$UUID" | sed -n 1p || true)
+          SECRET_ID=$(printf '%s\n' "$SETUP_OUT" | grep -ioE "$UUID" | sed -n 2p || true)
+          if [ -z "$ROLE_ID" ] || [ -z "$SECRET_ID" ]; then
+            echo "::error::Could not parse role_id/secret_id from setup-approle.sh output."
+            echo "::error::Check that Vault is unsealed and the admin token is valid."
+            echo "::group::DEBUG - setup-approle.sh output (secrets redacted)"
+            printf '%s\n' "$SETUP_OUT" | sed -E "s/$UUID/<redacted-uuid>/gI"
+            echo "::endgroup::"
+            echo "::group::DEBUG - vault status"
+            kubectl exec -n "$NAMESPACE" "$VAULT_POD" -- \
+              sh -c 'VAULT_ADDR=https://127.0.0.1:8200 VAULT_SKIP_VERIFY=true vault status || true'
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "::add-mask::$SECRET_ID"
+          echo "SECRET_ID=$SECRET_ID" >> "$GITHUB_ENV"
+          echo "ROLE_ID=$ROLE_ID" >> "$GITHUB_ENV"
+          echo "AppRole role + policy configured; role_id + secret_id obtained."
+
+      ###################################################################
+      # PUBLISH role_id + secret_id TO SECRETS BACKEND
+      ###################################################################
+      - name: Publish credentials to Key Vault
+        if: ${{ inputs.cloud == 'azure' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Azure governance policy 'Secrets should have the specified maximum
+          # validity period' rejects any Key Vault secret without an expiry, so we
+          # stamp +355 days (matching the other DPN pipelines). NOTE: the AppRole
+          # secret-id itself does not expire (secret_id_ttl=0), so RE-RUN this
+          # pipeline before the Key Vault copy expires to rotate it — a re-run
+          # generates a fresh secret-id and refreshes the expiry, then redeploy.
+          EXPIRY="$(date -u -d '+355 days' '+%Y-%m-%d')T00:00:00Z"
+          az keyvault secret set \
+            --vault-name "$KEY_VAULT_NAME" \
+            --name VAULT-APPROLE-SECRET-ID-REST-FEDERATOR \
+            --value "$SECRET_ID" \
+            --expires "$EXPIRY" \
+            --output none
+          echo "Stored VAULT-APPROLE-SECRET-ID-REST-FEDERATOR in Key Vault $KEY_VAULT_NAME (expires $EXPIRY)."
+
+      - name: Publish credentials to Secrets Manager
+        if: ${{ inputs.cloud == 'aws' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SECRET_ID_NAME="$SECRET_PREFIX/rest-federator/VAULT_APPROLE_SECRET_ID"
+          if aws secretsmanager describe-secret --secret-id "$SECRET_ID_NAME" >/dev/null 2>&1; then
+            aws secretsmanager put-secret-value --secret-id "$SECRET_ID_NAME" --secret-string "$SECRET_ID" >/dev/null
+          else
+            aws secretsmanager create-secret --name "$SECRET_ID_NAME" --secret-string "$SECRET_ID" >/dev/null
+          fi
+          echo "Stored $SECRET_ID_NAME in Secrets Manager."
+
+          # role_id is not sensitive; stored so dpn-rest-federator-cd.yml's Helm
+          # Deploy step can fetch it programmatically at deploy time via --set,
+          # instead of requiring the checked-in values file to be hand-edited.
+          ROLE_ID_NAME="$SECRET_PREFIX/rest-federator/VAULT_APPROLE_ROLE_ID"
+          if aws secretsmanager describe-secret --secret-id "$ROLE_ID_NAME" >/dev/null 2>&1; then
+            aws secretsmanager put-secret-value --secret-id "$ROLE_ID_NAME" --secret-string "$ROLE_ID" >/dev/null
+          else
+            aws secretsmanager create-secret --name "$ROLE_ID_NAME" --secret-string "$ROLE_ID" >/dev/null
+          fi
+          echo "Stored $ROLE_ID_NAME in Secrets Manager."
+
+          echo "NOTE: the AppRole secret-id does not expire (secret_id_ttl=0) — re-run this"
+          echo "pipeline periodically to rotate it, then redeploy rest-federator."
+
+      ###################################################################
+      # CLEANUP (cloud-agnostic)
+      ###################################################################
+      - name: Cleanup Pod Temp Files
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${VAULT_POD:-}" ]; then
+            kubectl exec -n "$NAMESPACE" "$VAULT_POD" -- rm -f \
+              /tmp/setup-approle.sh /tmp/rest-federator-policy.hcl /tmp/sa.sh || true
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          {
+            echo "### Vault AppRole Setup — rest-federator role_id"
+            echo ""
+            if [ "${{ inputs.cloud }}" == "aws" ]; then
+              echo "Stored in Secrets Manager at \`dpn/${{ inputs.environment }}-${{ inputs.cluster }}/rest-federator/VAULT_APPROLE_ROLE_ID\` — dpn-rest-federator-cd.yml fetches it automatically, no manual file edit needed."
+            else
+              echo "Set this in \`dpn-rest-federator-gateway/charts/dpn-rest-federator/values/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.yaml\` under \`restFederatorServer.vault.appRole.roleId\`, then redeploy:"
+            fi
+            echo ""
+            echo '```'
+            echo "$ROLE_ID"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "role_id (not sensitive): $ROLE_ID"

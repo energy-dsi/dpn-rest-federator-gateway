@@ -1,0 +1,33 @@
+demoRunnerServer:
+  name: dpn-demo-runner-server-1
+  replicaCount: 1
+  image:
+    repository: <<CONTAINER_REGISTRY_URL>>/dpn-demo-runner-server
+    tag: "1.0.0"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    # Azure ILB: exposes this service privately inside the VNet.
+    # loadBalancerIP omitted on purpose - Azure allocates from the ILB subnet.
+    internalLoadBalancer: true
+    port: 8443
+    loadBalancerIP: <<your specific value>>
+  # Same Secret the REST Federator gateway reads, so both ends of the
+  # gateway -> backend hop share one value.
+  apiKeySecret:
+    name: dpn-backend-api-key
+    key: apiKey
+  otel:
+    endpoint: "http://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317"
+    protocol: "grpc"
+    insecure: "true"
+    serviceName: "demo-runner-server"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

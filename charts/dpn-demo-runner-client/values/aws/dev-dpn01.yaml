@@ -1,0 +1,140 @@
+# =============================================================================
+# Demo Runner Client — AWS dev-dpn01 values
+# EKS     : <<your specific value>>
+# Account : <<your specific value>>
+# Region  : eu-west-2
+#
+# STATUS: draft — NOT yet ready to deploy. Blocked on:
+#   1. job.image.repository below assumes this service's image has been
+#      published to <<your specific value>>/dpn-demo-runner-client (same
+#      name/tag as the Azure ACR image, registry host swapped only) — NOT
+#      confirmed against a real GHCR listing. Verify before first deploy.
+#   2. vault.appRole.roleId below is a placeholder. The real AppRole role id
+#      for this AWS Vault instance must be obtained and substituted before
+#      first deploy (mirrors azure/dev-dpn01.yaml's approle authMethod).
+#
+# This chart has no cloud-specific templates (confirmed: no CSI/LB/IRSA logic
+# anywhere in templates/). cloudProvider is set below for consistency/
+# future-proofing only -- no template currently branches on it.
+# =============================================================================
+
+cloudProvider: aws
+
+imagePullSecret: ghcr-pull-secret
+
+job:
+  name: dpn-demo-runner-client-1
+  # Overridden per run (--set job.nameSuffix=$(Build.BuildId)) so each pipeline
+  # run creates a distinct Job object rather than trying to mutate one.
+  nameSuffix: "manual"
+  image:
+    repository: <<your specific value>>/dpn-demo-runner-client
+    tag: "1.0.0"
+    pullPolicy: Always
+  # Keep completed Jobs for an hour so their logs can be inspected.
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  env:
+    organisationName: ""              # blank = every subscribed organisation
+    productName: ""                   # blank = every subscribed product; together with organisationName above, blank/blank targets ALL subscriptions
+    mpan: "<<your specific value>>1"
+    postcode: "SW1A 1AA"
+    # Left blank -> the client omits assetId / generates a random FSP id.
+    assetId: ""
+    fspId: ""
+    senderFmarId: "dpn-demo-runner-client"
+    senderRole: "FSP"
+    contractualAuthorisation: "true"
+  consumerId: ""
+  readTimeoutSeconds: 60
+
+  # Management Node serving this consumer's REST product configuration.
+  # External HTTPS URL -- cloud-agnostic, carried over from
+  # azure/dev-dpn01.yaml (dev uses the dsidev domain, NOT test's dsitest1).
+  managementNode:
+    baseUrl: https://<<your specific value>>
+    requestTimeout: 5
+    cacheTtlSeconds: 60
+
+  # IDP token acquisition cache. Points at the same Redis the gateway uses.
+  # In-cluster reference -- cloud-agnostic, carried over unchanged.
+  redis:
+    host: dpn-rest-federator-redis-1
+    port: 6379
+    tlsEnabled: false
+    prefix: federator-client
+    username: ""
+
+  # Identity Provider. Keystore/truststore passwords are not set here — the
+  # Vault secret provider supplies them at startup. Cloud-agnostic, carried
+  # over from azure/dev-dpn01.yaml: dev uses the dsidev auth-mtls domain
+  # (NOT test's dsitest1) and its own registered clientId.
+  idp:
+    clientId: <<your specific value>>
+    authMode: private_key_jwt
+    mtlsEnabled: true
+    jwksUrl: https://<<your specific value>>/realms/management-node/protocol/openid-connect/certs
+    tokenUrl: https://<<your specific value>>/realms/management-node/protocol/openid-connect/token
+    jwtAlgorithm: RS256
+    jwtKeyAlias: federator
+    keystorePath: /tls/keystore.p12
+    truststorePath: /tls/truststore.jks
+
+  # client.properties / common-configuration.properties, rendered from these
+  # values by demo-runner-client-config.yaml.
+  clientProperties:
+    configMapName: dpn-rest-federator-client-properties
+    mountPath: /config
+
+  # mTLS keystore/truststore for rest-federator-client's outbound calls, as
+  # plain files from a Secret. Only used when vault.tlsEnabled is false below.
+  certificates:
+    enabled: false
+    secretName: dpn-federator-certificates
+    mountPath: /certs
+
+  # Vault. authMethod: token | approle. tlsEnabled reads the TLS material
+  # straight from Vault instead of a mounted keystore/truststore file.
+  # appRole.roleId is BLOCKED -- see header.
+  vault:
+    uri: https://vault-https.ns-dpn-01.svc.cluster.local:8200
+    truststorePath: /vault/truststore/truststore.jks
+    truststorePassword: ""
+    authMethod: approle
+    tlsEnabled: true
+    tlsBasePath: node-net/client
+    tlsKeystoreAlias: federator
+    appRole:
+      # Overwritten at deploy time by dpn-demo-runner-cd.yml's "Fetch Vault
+      # AppRole Role ID (AWS)" step -- this placeholder is never actually
+      # deployed. Shares rest-federator's own AppRole (see secretIdSecretName
+      # below), not a separate one. Requires a Secrets Manager entry at
+      # dpn/dev-dpn01/rest-federator/VAULT_APPROLE_ROLE_ID (see report).
+      roleId: "REPLACE_ME_VAULT_APPROLE_ROLE_ID"
+      mountPath: approle
+      # NOTE: azure/dev-dpn01.yaml uses 3600 here too (azure/dev-dpn02.yaml
+      # uses 300 -- an unexplained asymmetry vs both AWS test files, which
+      # use 3600 for both dpn01 and dpn02). Kept at 3600 to mirror the AWS
+      # test pattern; flagged, not silently resolved -- see report.
+      renewalIntervalSeconds: 3600
+      useSecretIdRef: true
+      # Shares rest-federator's AppRole (same roleId, fetched above) rather
+      # than the chart default (certificate-manager-secrets), which holds
+      # CERTIFICATE-MANAGER's own unrelated AppRole secret_id and would
+      # mismatch the roleId fetched above.
+      secretIdSecretName: dpn-rest-federator-server-secrets
+      secretIdSecretKey: VAULT_APPROLE_SECRET_ID
+  otel:
+    endpoint: "http://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317"
+    protocol: "grpc"
+    insecure: "true"
+    serviceName: "demo-runner-client"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

@@ -1,0 +1,62 @@
+# Properties files mounted at /config for the gateway.
+#
+# The src/configs/*.properties files in the repository are for local
+# development: their ${IDP_...} placeholders are literal text, and nothing
+# expands them at runtime. In a cluster the properties are rendered here from
+# Helm values instead — the same approach the federator gateway takes.
+#
+# Keystore and truststore passwords are deliberately left empty: the Vault
+# secret provider fills them in at startup (see vault.* below). AppRole
+# role-id and secret-id are likewise absent, arriving as the VAULT_ROLE_ID and
+# VAULT_SECRET_ID environment variables, which take precedence over any
+# property.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.restFederatorServer.name }}-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.restFederatorServer.name }}
+data:
+  server.properties: |
+    common.configuration=/config/common-configuration.properties
+
+    federator.producer.id={{ .Values.restFederatorServer.producerId }}
+
+    management.node.base.url={{ .Values.restFederatorServer.managementNode.baseUrl }}
+    management.node.request.timeout={{ .Values.restFederatorServer.managementNode.requestTimeout }}
+    management.node.cache.ttl.seconds={{ .Values.restFederatorServer.managementNode.cacheTtlSeconds }}
+
+    redis.host={{ .Values.restFederatorServer.redis.host }}
+    redis.port={{ .Values.restFederatorServer.redis.port }}
+    redis.tls.enabled={{ .Values.restFederatorServer.redis.tlsEnabled }}
+    redis.prefix={{ .Values.restFederatorServer.redis.prefix }}
+    redis.username={{ .Values.restFederatorServer.redis.username }}
+
+  common-configuration.properties: |
+    idp.client.id={{ .Values.restFederatorServer.idp.clientId }}
+    idp.auth.mode={{ .Values.restFederatorServer.idp.authMode }}
+    idp.mtls.enabled={{ .Values.restFederatorServer.idp.mtlsEnabled }}
+
+    idp.jwks.url={{ .Values.restFederatorServer.idp.jwksUrl }}
+    idp.token.url={{ .Values.restFederatorServer.idp.tokenUrl }}
+
+    idp.jwt.algorithm={{ .Values.restFederatorServer.idp.jwtAlgorithm }}
+    idp.jwt.key.alias={{ .Values.restFederatorServer.idp.jwtKeyAlias }}
+
+    idp.keystore.path={{ .Values.restFederatorServer.idp.keystorePath }}
+    idp.keystore.password=
+    idp.truststore.path={{ .Values.restFederatorServer.idp.truststorePath }}
+    idp.truststore.password=
+
+    vault.uri={{ .Values.restFederatorServer.vault.uri }}
+    vault.truststore.path={{ .Values.restFederatorServer.vault.truststorePath }}
+    vault.truststore.password={{ .Values.restFederatorServer.vault.truststorePassword }}
+
+    vault.auth.method={{ .Values.restFederatorServer.vault.authMethod }}
+    vault.approle.mount-path={{ .Values.restFederatorServer.vault.appRole.mountPath }}
+    vault.approle.renewal-interval-seconds={{ .Values.restFederatorServer.vault.appRole.renewalIntervalSeconds }}
+
+    vault.tls.enabled={{ .Values.restFederatorServer.vault.tlsEnabled }}
+    vault.tls.secret-base-path={{ .Values.restFederatorServer.vault.tlsBasePath }}
+    vault.tls.keystore-alias={{ .Values.restFederatorServer.vault.tlsKeystoreAlias }}

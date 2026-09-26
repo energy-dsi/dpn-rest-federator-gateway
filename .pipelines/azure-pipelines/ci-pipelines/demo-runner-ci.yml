@@ -1,0 +1,506 @@
+# CI pipeline for the demo/ example applications.
+#
+# These are NOT part of the REST Federator gateway. They demonstrate how a
+# participant builds against it:
+#   demo/demo-runner-server -> example backend the gateway proxies to
+#   demo/demo-runner-client -> example consumer importing rest-federator-client
+#
+# Build order:
+#   1. rest-federator modules -> mvn install (the client lib and its common
+#      dependency, which demo-runner-client imports)
+#   2. demo-runner-server      -> mvn clean verify
+#   3. demo-runner-client      -> mvn clean verify
+#
+# The gateway itself is built by rest-federator-ci.yml.
+
+trigger: none
+
+pool:
+  name: <<YOUR AGENT POOL>>
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: sc-dpn-dev-001
+  values:
+    - sc-dpn-dev-001
+    - sc-dpn-dev-002
+    - sc-dpn-test-001
+    - sc-dpn-test-002
+    - sc-dpn-pdev-ppd-001
+    - sc-dpn-ptest-ppd-001
+    - sc-dpn-puat-ppd-001
+- name: environment
+  type: string
+  default: dev
+  displayName: Environment Name
+  values:
+    - dev
+    - devtest
+    - test
+    - pdev
+    - ptest
+    - puat
+- name: cluster
+  type: string
+  default: dpn01
+  values:
+    - dpn01
+    - dpn02
+
+variables:
+- group: dockerhub-creds
+- group: federator-ci
+- group: soner_report
+# FOSSA_API_KEY lives in its own group; without it the FOSSA steps get an
+# empty token and fossa-cli rejects it as invalid.
+- group: fossa_scan
+
+- name: DEMO_SERVER_IMAGE
+  value: dpn-demo-runner-server
+- name: DEMO_CLIENT_IMAGE
+  value: dpn-demo-runner-client
+
+- name: IMAGE_TAG
+  value: $(Build.BuildId)
+
+- name: REST_SRC
+  value: $(Pipeline.Workspace)/s/dpn-rest-federator-gateway
+
+- name: DEMO_SERVER_SRC
+  value: $(Pipeline.Workspace)/s/dpn-rest-federator-gateway/demo/demo-runner-server
+- name: DEMO_CLIENT_SRC
+  value: $(Pipeline.Workspace)/s/dpn-rest-federator-gateway/demo/demo-runner-client
+
+- name: PARAMETERS_FILE
+  value: $(REST_SRC)/.pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json
+
+- name: CLOC_EXCLUDES
+  value: "target,.git,node_modules"
+
+stages:
+
+# =====================================================
+# Stage 1 — Checkmarx
+# =====================================================
+- stage: Checkmarx_Scan
+  displayName: CheckMarx One Scan
+  jobs:
+  - job: cxOneScan
+    steps:
+    - checkout: self
+
+    - template: ./CxOneScan.yml
+      parameters:
+        scanType: ''
+        cxoneserviceName: 'checkmarxOne-sc'
+        cxoneProjectName: '$(Build.Repository.Name)-demo-runner'
+        cxoneProjectGroup: 'AZ-APP-CheckmarxOne-NESO'
+        cxoneTenantName: 'neso'
+        excludeFolders: '!.github'
+        appName: 'Checkmarxone'
+
+# =====================================================
+# Stage 1b — FOSSA (runs in parallel with Checkmarx)
+# =====================================================
+- stage: Fossa_Scan
+  displayName: FOSSA License & Dependency Scan
+  jobs:
+  - job: fossaScan
+    steps:
+    - checkout: self
+
+    - template: ./FossaScan.yml
+      parameters:
+        fossaProjectName: '$(Build.Repository.Name)-demo-runner'
+        failOnIssues: true
+
+# =====================================================
+# Stage 2 — Unit Tests + Sonar
+# =====================================================
+- stage: UnitTests
+  displayName: Run Unit Tests
+  dependsOn:
+  - Checkmarx_Scan
+  - Fossa_Scan
+  jobs:
+  - job: RunTests
+    displayName: Maven Unit Tests (demo runner server + client)
+    steps:
+    - checkout: self
+      path: s/dpn-rest-federator-gateway
+
+    - script: |
+        CONFIG_FILE="$(PARAMETERS_FILE)"
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "##[error]Config file not found: $(PARAMETERS_FILE)"
+          exit 1
+        fi
+        for param in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+          value=$(jq -r ".\"$param\"" "$CONFIG_FILE")
+          echo "##vso[task.setvariable variable=$param]$value"
+        done
+      displayName: Load Environment Config
+
+    - task: JavaToolInstaller@0
+      displayName: Set Java 21
+      inputs:
+        versionSpec: '21'
+        jdkArchitectureOption: x64
+        jdkSourceOption: PreInstalled
+
+    - script: |
+        mkdir -p ~/.m2
+        cat <<EOF > ~/.m2/settings.xml
+        <settings>
+          <servers>
+            <server>
+              <id>github</id>
+              <username>${GITHUB_MAVEN_USERNAME}</username>
+              <password>${GITHUB_MAVEN_TOKEN}</password>
+            </server>
+          </servers>
+        </settings>
+        EOF
+      displayName: Configure Maven settings
+      env:
+        GITHUB_MAVEN_TOKEN: $(GITHUB_MAVEN_TOKEN)
+
+    - script: |
+        echo "$(DOCKERHUB_PASSWORD)" | docker login -u "$(DOCKERHUB_USERNAME)" --password-stdin
+      displayName: DockerHub login
+
+    # demo-runner-client imports rest-federator-client, which needs common;
+    # one aggregator install makes both resolvable.
+    - task: Maven@4
+      displayName: 'Install rest-federator modules'
+      inputs:
+        mavenPomFile: $(REST_SRC)/pom.xml
+        goals: clean install
+        options: '-DskipTests -f $(REST_SRC)/pom.xml'
+        publishJUnitResults: false
+
+    - task: Maven@4
+      displayName: 'Run mvn clean verify (demo-runner-server)'
+      inputs:
+        mavenPomFile: $(DEMO_SERVER_SRC)/pom.xml
+        goals: clean verify
+        options: '-f $(DEMO_SERVER_SRC)/pom.xml'
+        publishJUnitResults: true
+        testResultsFiles: '**/surefire-reports/*.xml'
+
+    - task: Maven@4
+      displayName: 'Run mvn clean verify (demo-runner-client)'
+      inputs:
+        mavenPomFile: $(DEMO_CLIENT_SRC)/pom.xml
+        goals: clean verify
+        options: '-f $(DEMO_CLIENT_SRC)/pom.xml'
+        publishJUnitResults: true
+        testResultsFiles: '**/surefire-reports/*.xml'
+
+    - script: |
+        sudo apt-get update
+        sudo apt-get install -y cloc
+      displayName: Install CLOC
+
+    - script: |
+        cloc "$(DEMO_SERVER_SRC)" "$(DEMO_CLIENT_SRC)" --exclude-dir=$(CLOC_EXCLUDES) --json --out=cloc-report.json
+        cloc "$(DEMO_SERVER_SRC)" "$(DEMO_CLIENT_SRC)" --exclude-dir=$(CLOC_EXCLUDES) --xml --out=cloc-report.xml
+        mkdir -p $(Build.ArtifactStagingDirectory)/cloc-reports
+        cp cloc-report.xml cloc-report.json $(Build.ArtifactStagingDirectory)/cloc-reports
+      displayName: 'Run CLOC and prepare artifacts'
+
+    - task: PublishCodeCoverageResults@2
+      displayName: Publish JaCoCo Coverage (demo-runner-server)
+      inputs:
+        codeCoverageTool: JaCoCo
+        summaryFileLocation: '$(DEMO_SERVER_SRC)/target/site/jacoco/jacoco.xml'
+        reportDirectory: '$(DEMO_SERVER_SRC)/target/site/jacoco'
+        failIfCoverageEmpty: true
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish CLOC Report'
+      inputs:
+        pathtoPublish: '$(Build.ArtifactStagingDirectory)/cloc-reports'
+        artifactName: 'cloc-reports'
+
+    - task: DownloadSecureFile@1
+      name: sonarCert
+      inputs:
+        secureFile: sonarcert.pem
+      displayName: 'Download SonarQube Cert'
+
+    - bash: |
+        echo "##vso[task.setvariable variable=NODE_EXTRA_CA_CERTS]$(sonarCert.secureFilePath)"
+      displayName: "Set NODE CA certs"
+
+    - task: AzureKeyVault@2
+      inputs:
+        azureSubscription: '${{ parameters.ServiceConnection }}'
+        keyVaultName: '$(KEY_VAULT_NAME)'
+        secretsFilter: 'SONAR-KEYSTORE-PWD'
+        RunAsPreJob: false
+      displayName: 'Get SonarQube Keystore Password'
+
+    - script: |
+        keytool -import -trustcacerts \
+          -file $(sonarCert.secureFilePath) \
+          -keystore $(Agent.TempDirectory)/sonar-truststore.jks \
+          -storepass $(SONAR-KEYSTORE-PWD) \
+          -alias sonarqube \
+          -noprompt
+      displayName: Import SonarQube Certs
+
+    - task: SonarQubePrepare@7
+      displayName: 'Prepare SonarQube Analysis'
+      inputs:
+        SonarQube: sonar-neso-sc
+        scannerMode: CLI
+        configMode: manual
+        cliProjectKey: '$(Build.Repository.Name)-demo-runner'
+        cliProjectName: '$(Build.Repository.Name)-demo-runner'
+        cliSources: $(REST_SRC)/demo
+        extraProperties: |
+          sonar.sources=$(DEMO_SERVER_SRC)/src,$(DEMO_CLIENT_SRC)/src
+          sonar.java.binaries=$(DEMO_SERVER_SRC)/target/classes,$(DEMO_CLIENT_SRC)/target/classes
+          sonar.coverage.jacoco.xmlReportPaths=$(DEMO_SERVER_SRC)/target/site/jacoco/jacoco.xml,$(DEMO_CLIENT_SRC)/target/site/jacoco/jacoco.xml
+          sonar.scanner.skipCertificateCheck=true
+          sonar.branch.name=$(Build.SourceBranchName)
+
+    - task: SonarQubeAnalyze@7
+      displayName: 'Sonar Scan task'
+      env:
+        SONAR_SCANNER_OPTS: '-Djavax.net.ssl.trustStore=$(Agent.TempDirectory)/sonar-truststore.jks -Djavax.net.ssl.trustStorePassword=$(SONAR-KEYSTORE-PWD)'
+      inputs:
+        jdkversion: 'JAVA_HOME'
+
+    - task: SonarQubePublish@7
+      displayName: 'Publish SonarQube Results'
+      inputs:
+        pollingTimeoutSec: '600'
+
+# =====================================================
+# Stage 3 — Build + Push + Sign + Scan
+# =====================================================
+- stage: Build
+  dependsOn: UnitTests
+  condition: succeeded()
+
+  jobs:
+  - job: BuildImages
+    timeoutInMinutes: 25
+    steps:
+    - checkout: self
+      path: s/dpn-rest-federator-gateway
+
+    - script: |
+        CONFIG_FILE="$(PARAMETERS_FILE)"
+        if [ ! -f "$CONFIG_FILE" ]; then
+          echo "##[error]Config file not found: $(PARAMETERS_FILE)"
+          exit 1
+        fi
+        for param in $(jq -r 'keys_unsorted | .[]' "$CONFIG_FILE"); do
+          value=$(jq -r ".\"$param\"" "$CONFIG_FILE")
+          echo "##vso[task.setvariable variable=$param]$value"
+        done
+      displayName: Load Environment Config
+
+    - task: AzureCLI@2
+      displayName: Login ACR
+      inputs:
+        azureSubscription: ${{ parameters.ServiceConnection }}
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          az acr login --name $(CONTAINER_REGISTRY)
+
+    - task: JavaToolInstaller@0
+      displayName: Set Java 21
+      inputs:
+        versionSpec: '21'
+        jdkArchitectureOption: x64
+        jdkSourceOption: PreInstalled
+
+    # Vendored DPN platform plumbing. Installed first so the gateway, client
+    # and demo modules can resolve it from the local repository.
+    - task: Maven@4
+      displayName: 'Install rest-federator modules'
+      inputs:
+        mavenPomFile: $(REST_SRC)/pom.xml
+        goals: clean install
+        options: '-DskipTests -f $(REST_SRC)/pom.xml'
+        publishJUnitResults: false
+
+    - task: Maven@4
+      displayName: 'Package demo-runner-server'
+      inputs:
+        mavenPomFile: $(DEMO_SERVER_SRC)/pom.xml
+        goals: clean package
+        options: '-DskipTests -f $(DEMO_SERVER_SRC)/pom.xml'
+        publishJUnitResults: false
+
+    - task: Maven@4
+      displayName: 'Package demo-runner-client'
+      inputs:
+        mavenPomFile: $(DEMO_CLIENT_SRC)/pom.xml
+        goals: clean package
+        options: '-DskipTests -f $(DEMO_CLIENT_SRC)/pom.xml'
+        publishJUnitResults: false
+
+    # Derive JAR_NAME from the actual built jars (artifactId-version).
+    - script: |
+        SERVER_JAR_PATH=$(ls $(DEMO_SERVER_SRC)/target/*.jar 2>/dev/null | grep -v -E 'sources|javadoc|\.original$' | head -n1)
+        if [ -z "$SERVER_JAR_PATH" ]; then
+          echo "##[error]No built jar found under $(DEMO_SERVER_SRC)/target/"
+          exit 1
+        fi
+        echo "##vso[task.setvariable variable=SERVER_JAR_NAME]$(basename "$SERVER_JAR_PATH" .jar)"
+
+        CLIENT_JAR_PATH=$(ls $(DEMO_CLIENT_SRC)/target/*.jar 2>/dev/null | grep -v -E 'sources|javadoc|\.original$' | head -n1)
+        if [ -z "$CLIENT_JAR_PATH" ]; then
+          echo "##[error]No built jar found under $(DEMO_CLIENT_SRC)/target/"
+          exit 1
+        fi
+        echo "##vso[task.setvariable variable=CLIENT_JAR_NAME]$(basename "$CLIENT_JAR_PATH" .jar)"
+      displayName: 'Resolve demo runner jar names'
+
+    # Build context is the repo root: the Dockerfiles COPY from demo/*/target.
+    - script: |
+        docker build --no-cache --pull --provenance=false --sbom=false \
+          --build-arg JAR_NAME=$(SERVER_JAR_NAME) \
+          -f $(REST_SRC)/docker/Dockerfile.demo-runner-server \
+          -t $(CONTAINER_REGISTRY_URL)/$(DEMO_SERVER_IMAGE):$(IMAGE_TAG) \
+          $(REST_SRC)
+      displayName: Build Demo Runner Server Image
+
+    - script: |
+        docker push $(CONTAINER_REGISTRY_URL)/$(DEMO_SERVER_IMAGE):$(IMAGE_TAG)
+      displayName: Tag and Push Demo Runner Server Image
+
+    - script: |
+        docker build --no-cache --pull --provenance=false --sbom=false \
+          --build-arg JAR_NAME=$(CLIENT_JAR_NAME) \
+          -f $(REST_SRC)/docker/Dockerfile.demo-runner-client \
+          -t $(CONTAINER_REGISTRY_URL)/$(DEMO_CLIENT_IMAGE):$(IMAGE_TAG) \
+          $(REST_SRC)
+      displayName: Build Demo Runner Client Image
+
+    - script: |
+        docker push $(CONTAINER_REGISTRY_URL)/$(DEMO_CLIENT_IMAGE):$(IMAGE_TAG)
+      displayName: Tag and Push Demo Runner Client Image
+
+    #-----------------------------------------
+    # Image Signing with Sigstore/Cosign
+    #-----------------------------------------
+    - script: |
+        SERVER_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $(CONTAINER_REGISTRY_URL)/$(DEMO_SERVER_IMAGE):$(IMAGE_TAG))
+        echo $SERVER_DIGEST > demo-server-image-digest.txt
+        echo "##vso[task.setvariable variable=DEMO_SERVER_IMAGE_DIGEST]$SERVER_DIGEST"
+
+        CLIENT_DIGEST=$(docker inspect --format='{{index .RepoDigests 0}}' $(CONTAINER_REGISTRY_URL)/$(DEMO_CLIENT_IMAGE):$(IMAGE_TAG))
+        echo $CLIENT_DIGEST > demo-client-image-digest.txt
+        echo "##vso[task.setvariable variable=DEMO_CLIENT_IMAGE_DIGEST]$CLIENT_DIGEST"
+      displayName: Capture Image Digests
+
+    - task: DownloadSecureFile@1
+      name: cosignKey
+      inputs:
+        secureFile: cosign.key
+      displayName: 'Download Cosign Key'
+
+    - script: |
+        curl -sSL https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 -o cosign
+        chmod +x cosign
+        sudo mv cosign /usr/local/bin/
+      displayName: Install Cosign
+
+    - task: AzureKeyVault@2
+      inputs:
+        azureSubscription: '${{ parameters.ServiceConnection }}'
+        keyVaultName: '$(KEY_VAULT_NAME)'
+        secretsFilter: 'COSIGN-PASSWORD'
+        RunAsPreJob: false
+
+    - script: |
+        cat > /tmp/signing-config.json << 'EOF'
+        {
+          "mediaType": "application/vnd.dev.sigstore.signingconfig.v0.2+json",
+          "caUrls": [],
+          "oidcUrls": [],
+          "rekorTlogUrls": [],
+          "tsaUrls": []
+        }
+        EOF
+        cosign sign --key $(cosignKey.secureFilePath) --signing-config /tmp/signing-config.json $(DEMO_SERVER_IMAGE_DIGEST)
+        cosign sign --key $(cosignKey.secureFilePath) --signing-config /tmp/signing-config.json $(DEMO_CLIENT_IMAGE_DIGEST)
+      env:
+        COSIGN_PASSWORD: $(COSIGN-PASSWORD)
+      displayName: Sign Images
+
+    - publish: demo-server-image-digest.txt
+      artifact: demo-server-image-digest
+      displayName: Publish Server Digest File
+
+    - publish: demo-client-image-digest.txt
+      artifact: demo-client-image-digest
+      displayName: Publish Client Digest File
+
+    # ---------------------------------------
+    # JFrog X-Ray Set Up
+    # ---------------------------------------
+    - task: DownloadSecureFile@1
+      displayName: Jfrog Certificate Installation
+      name: caCertificate
+      inputs:
+        secureFile: <<your specific value>>.crt
+        retryCount: '1'
+
+    - script: |
+        sudo chown root:root $(caCertificate.secureFilePath)
+        sudo chmod a+r $(caCertificate.secureFilePath)
+        sudo ln -s -f -t /etc/ssl/certs/ $(caCertificate.secureFilePath)
+        sudo cp $(caCertificate.secureFilePath) /usr/share/ca-certificates/
+        sudo apt-get -y install zip
+      displayName: Install JFrog Certificate
+
+    - script: |
+        curl -fL https://install-cli.jfrog.io | sh
+        jf --version
+      displayName: Update JFrog CLI
+
+    - script: |
+        sleep 30
+      displayName: Wait for Xray indexing
+
+    - task: JFrogDocker@1
+      displayName: JFrog X-Ray Scan - demo-runner-server
+      inputs:
+        command: Scan
+        xrayConnection: Jfrog_Xray_SC
+        imageName: '$(CONTAINER_REGISTRY_URL)/$(DEMO_SERVER_IMAGE):$(IMAGE_TAG)'
+        watchesSource: 'none'
+        licenses: false
+        allowBypassArchiveLimits: false
+        threads: '3'
+        skipLogin: true
+        allowFailBuild: true
+
+    - task: JFrogDocker@1
+      displayName: JFrog X-Ray Scan - demo-runner-client
+      inputs:
+        command: Scan
+        xrayConnection: Jfrog_Xray_SC
+        imageName: '$(CONTAINER_REGISTRY_URL)/$(DEMO_CLIENT_IMAGE):$(IMAGE_TAG)'
+        watchesSource: 'none'
+        licenses: false
+        allowBypassArchiveLimits: false
+        threads: '3'
+        skipLogin: true
+        allowFailBuild: true
+
+    - script: |
+        docker rmi $(CONTAINER_REGISTRY_URL)/$(DEMO_SERVER_IMAGE):$(IMAGE_TAG) || true
+        docker rmi $(CONTAINER_REGISTRY_URL)/$(DEMO_CLIENT_IMAGE):$(IMAGE_TAG) || true
+      displayName: Cleanup Docker & Temp Files
+      condition: always()

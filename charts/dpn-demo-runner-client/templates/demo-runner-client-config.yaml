@@ -1,0 +1,57 @@
+# client.properties / common-configuration.properties for the demo runner
+# client Job, rendered from Helm values — mirrors
+# charts/dpn-rest-federator/templates/rest-federator-server-config.yaml.
+#
+# Keystore/truststore passwords are left empty: the Vault secret provider
+# supplies them at startup when vault.tlsEnabled is set.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.job.clientProperties.configMapName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.job.name }}
+data:
+  client.properties: |
+    common.configuration={{ .Values.job.clientProperties.mountPath }}/common-configuration.properties
+
+    federator.consumer.id={{ .Values.job.consumerId }}
+    federator.rest.read.timeout.seconds={{ .Values.job.readTimeoutSeconds }}
+
+    management.node.base.url={{ .Values.job.managementNode.baseUrl }}
+    management.node.request.timeout={{ .Values.job.managementNode.requestTimeout }}
+    management.node.cache.ttl.seconds={{ .Values.job.managementNode.cacheTtlSeconds }}
+
+    redis.host={{ .Values.job.redis.host }}
+    redis.port={{ .Values.job.redis.port }}
+    redis.tls.enabled={{ .Values.job.redis.tlsEnabled }}
+    redis.prefix={{ .Values.job.redis.prefix }}
+    redis.username={{ .Values.job.redis.username }}
+
+  common-configuration.properties: |
+    idp.client.id={{ .Values.job.idp.clientId }}
+    idp.auth.mode={{ .Values.job.idp.authMode }}
+    idp.mtls.enabled={{ .Values.job.idp.mtlsEnabled }}
+
+    idp.jwks.url={{ .Values.job.idp.jwksUrl }}
+    idp.token.url={{ .Values.job.idp.tokenUrl }}
+
+    idp.jwt.algorithm={{ .Values.job.idp.jwtAlgorithm }}
+    idp.jwt.key.alias={{ .Values.job.idp.jwtKeyAlias }}
+
+    idp.keystore.path={{ .Values.job.idp.keystorePath }}
+    idp.keystore.password=
+    idp.truststore.path={{ .Values.job.idp.truststorePath }}
+    idp.truststore.password=
+
+    vault.uri={{ .Values.job.vault.uri }}
+    vault.truststore.path={{ .Values.job.vault.truststorePath }}
+    vault.truststore.password={{ .Values.job.vault.truststorePassword }}
+
+    vault.auth.method={{ .Values.job.vault.authMethod }}
+    vault.approle.mount-path={{ .Values.job.vault.appRole.mountPath }}
+    vault.approle.renewal-interval-seconds={{ .Values.job.vault.appRole.renewalIntervalSeconds }}
+
+    vault.tls.enabled={{ .Values.job.vault.tlsEnabled }}
+    vault.tls.secret-base-path={{ .Values.job.vault.tlsBasePath }}
+    vault.tls.keystore-alias={{ .Values.job.vault.tlsKeystoreAlias }}

@@ -1,0 +1,184 @@
+# =============================================================================
+# REST Federator Server — AWS dev-dpn01 values
+# EKS     : <<your specific value>>
+# Account : <<your specific value>>
+# Region  : eu-west-2
+#
+# STATUS: draft — NOT yet ready to deploy. Blocked on:
+#   1. BACKEND_API_KEY / VAULT_TRUSTSTORE_PASSWORD are auto-created by the
+#      "DPN CD - REST Federator Gateway" workflow's provisioning step as
+#      REPLACE_ME placeholders if missing — update them with real values in
+#      Secrets Manager under secretsManager.secretPrefix before relying on them.
+#   2. serviceAccount.irsaRoleArn is auto-created/updated by the same
+#      provisioning step (dpn-rest-federator-secrets-role) — no manual step
+#      needed, but confirm it after first run.
+#   3. image.repository/tag confirmed real: <<your specific value>>/
+#      dpn-rest-federator-server:1.0.1 (same image as test-dpn01/test-dpn02).
+#   4. vault.appRole.roleId below is a placeholder. The real AppRole role id
+#      for this AWS Vault instance must be obtained and substituted before
+#      first deploy (mirrors azure/dev-dpn01.yaml's approle authMethod) --
+#      cannot be auto-provisioned by the pipeline (Vault-side infra). Run the
+#      "DPN CD - REST Federator Role ID Creation" workflow (environment: dev,
+#      cluster: dpn01, cloud: aws) first.
+#   5. idp.clientId/jwksUrl/tokenUrl below point at the dev NESO environment
+#      (<<your specific value>>) using this cluster's own
+#      NESO-issued client id, carried over from azure/dev-dpn01.yaml (which
+#      differs from azure/test-dpn01.yaml only in domain + client id, same as
+#      dev vs test elsewhere in this repo). jwksUrl keeps AWS test-dpn01's
+#      corrected URL pattern (client-specific certificate endpoint on the
+#      Management Node, not the Keycloak realm JWKS endpoint that
+#      azure/dev-dpn01.yaml still uses) -- not independently confirmed against
+#      a live dev NESO Management Node, flag if this turns out wrong.
+# =============================================================================
+
+cloudProvider: aws
+
+imagePullSecret: ghcr-pull-secret
+
+restFederatorServer:
+  name: dpn-rest-federator-server-1
+  replicaCount: 1
+  image:
+    repository: <<your specific value>>/dpn-rest-federator-server
+    tag: "1.0.1"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    # AWS NLB: exposes this service privately inside the VPC.
+    # loadBalancerIP intentionally omitted -- AWS assigns dynamically.
+    internalLoadBalancer: true
+    port: 8443
+    lbPort: 443
+  # Whether this listener terminates HTTPS at all (the identity cert
+  # itself is always sourced from Vault regardless of this toggle).
+  tls:
+    enabled: true
+  # Whether inbound connections must additionally present a client
+  # certificate. Meaningless when tls.enabled is false.
+  mtls:
+    enabled: false
+  backend:
+    baseUrl: https://dpn-demo-runner-server-1:8443
+    # name matches keyvault.secretName below, per this chart's own values.yaml
+    # instructions (root values.yaml:118-119) -- azure/dev-dpn01.yaml never
+    # did this alignment (left it as "dpn-backend-api-key", a Secret nothing
+    # creates). key matches the secretObjects key both cloud branches of
+    # rest-federator-server-secretproviderclass.yaml actually write
+    # ("BACKEND_API_KEY", not "apiKey" -- root values.yaml's own default is
+    # inconsistent with itself here too). Both pre-existing bugs, independent
+    # of AWS onboarding. Mirrors test-dpn01.yaml's fix.
+    apiKeySecret:
+      name: dpn-rest-federator-server-secrets
+      key: BACKEND_API_KEY
+  # Redis is deployed by the separate dpn-redis chart; this points the
+  # gateway at that release's Service. Cloud-agnostic in-cluster reference,
+  # carried over from azure/dev-dpn01.yaml unchanged.
+  redis:
+    host: dpn-rest-federator-redis-1
+    port: 6379
+    tlsEnabled: false
+    prefix: federator-server-1
+    username: ""
+  producerId: ""
+  # Management Node serving this producer's REST product configuration.
+  # External HTTPS URL -- dev NESO environment, per azure/dev-dpn01.yaml.
+  managementNode:
+    baseUrl: https://<<your specific value>>
+    requestTimeout: 5
+    cacheTtlSeconds: 60
+  # Identity Provider. Keystore/truststore passwords are not set here — the
+  # Vault secret provider supplies them at startup.
+  idp:
+    # Real NESO-issued Federator client credentials for dev-dpn01 (from
+    # azure/dev-dpn01.yaml, NESO's "Credentials for DPN Federator" page).
+    # jwksUrl points at the client-specific certificate endpoint on the
+    # Management Node itself (AWS test-dpn01's corrected pattern), not the
+    # Keycloak realm JWKS endpoint azure/dev-dpn01.yaml still configures --
+    # see header item 5.
+    clientId: <<your specific value>>
+    authMode: private_key_jwt
+    mtlsEnabled: true
+    jwksUrl: https://<<your specific value>>/api/v1/certificate/<<your specific value>>/jwks
+    tokenUrl: https://<<your specific value>>/realms/management-node/protocol/openid-connect/token
+    jwtAlgorithm: RS256
+    jwtKeyAlias: federator
+    keystorePath: /tls/keystore.p12
+    truststorePath: /tls/truststore.jks
+  # Properties file naming the shared common-configuration file.
+  propertiesPath: /config/server.properties
+  # Vault. authMethod: token | approle. tlsEnabled reads the TLS material
+  # straight from Vault, cloud-agnostic (in-cluster URI + external NESO URLs
+  # carried over unchanged). appRole.roleId is BLOCKED -- see header.
+  vault:
+    uri: https://vault-https.ns-dpn-01.svc.cluster.local:8200
+    truststorePath: /vault/truststore/truststore.jks
+    # NOT read by the chart anymore — rest-federator-server-config.yaml now
+    # looks up the real password directly from
+    # certificate-manager-secrets/VAULT_SSL_TRUST_STORE_PASSWORD via Helm's
+    # `lookup`, since RestFederatorServerConfig.backendRestTemplate() reads
+    # vault.truststore.password from the static properties file with no
+    # env-var override and no live Vault substitution — a placeholder here
+    # (empty or otherwise) either crashes bean construction outright on
+    # newer Spring Boot/Java builds (strict PKCS12 MAC verification) or
+    # silently uses the wrong password on older ones. Left here, unused,
+    # only so this field isn't a confusing empty gap in the file.
+    truststorePassword: ""
+    authMethod: approle
+    tlsEnabled: true
+    tlsBasePath: node-net/client
+    tlsKeystoreAlias: federator
+    keystorePasswordPath: node-net/client/keystore-password#password
+    truststorePasswordPath: node-net/client/truststore-password#password
+    appRole:
+      # Overridden at deploy time by dpn-rest-federator-cd.yml's Helm Deploy
+      # step via --set, fetched from Secrets Manager
+      # (dpn/dev-dpn01/rest-federator/VAULT_APPROLE_ROLE_ID) -- this value is
+      # only a fallback if that fetch is ever skipped. Run the
+      # "DPN CD - REST Federator Role ID Creation" workflow first to create it.
+      roleId: "REPLACE_ME_VAULT_APPROLE_ROLE_ID"
+      mountPath: approle
+      renewalIntervalSeconds: 3600
+      useSecretIdRef: true
+      # root values.yaml defaults this to "certificate-manager-secrets" (a
+      # copy-paste leftover, wrong service) -- override to this chart's own
+      # CSI-synced Secret, which now also syncs VAULT_APPROLE_SECRET_ID.
+      secretIdSecretName: dpn-rest-federator-server-secrets
+      secretIdSecretKey: VAULT_APPROLE_SECRET_ID
+  otel:
+    endpoint: "http://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4317"
+    protocol: "grpc"
+    insecure: "true"
+    serviceName: "rest-federator-server"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+# AWS Secrets Manager — BACKEND_API_KEY must be created under this prefix
+# before first deploy (see header, item 1).
+secretsManager:
+  enabled: true
+  secretPrefix: "dpn/dev-dpn01/rest-federator"
+
+serviceAccount:
+  create: true
+  name: "dpn-rest-federator"
+  # BLOCKED: real IAM role does not exist yet (see header, item 2).
+  irsaRoleArn: "<<your specific value>>"
+
+# keyvault.enabled is reused here (name notwithstanding) purely to trigger
+# rest-federator-server-deployment.yaml's CSI volume mount -- that gate isn't
+# cloud-specific in the template. The SecretProviderClass it mounts
+# (dpn-rest-federator-server-1-kv-secrets) is the AWS one declared above via
+# secretsManager, not an Azure Key Vault one. clientID/name/tenantId are
+# Azure-only fields and are left unset since AZURE_CLIENT_ID is no longer
+# rendered on AWS (cloudProvider != "azure").
+keyvault:
+  enabled: true
+  secretName: dpn-rest-federator-server-secrets
+  mountPath: /mnt/secrets

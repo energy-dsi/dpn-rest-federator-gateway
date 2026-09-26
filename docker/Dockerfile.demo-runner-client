@@ -1,0 +1,35 @@
+# Dockerfile for demo/demo-runner-client (EXAMPLE consumer).
+#
+# Runs as a one-shot Kubernetes Job, not a long-lived service: it executes the
+# demo call sequence against the REST Federator gateway and exits.
+#
+# Run parameters are supplied as environment variables by the Job spec:
+#   PRODUCT_NAME  (required)  DSM data product name
+#   MPAN, POSTCODE, ASSET_ID, FSP_ID, SENDER_FMAR_ID, SENDER_ROLE,
+#   CONTRACTUAL_AUTHORISATION
+#   FEDERATOR_CLIENT_PROPERTIES  path to client.properties (mounted)
+#
+# This is a Spring Boot repackaged ("fat") jar -- dependencies are nested inside
+# BOOT-INF/lib/*.jar, so it MUST be launched with `java -jar`, not a flat -cp.
+
+FROM eclipse-temurin:21-jre AS demo-runner-client
+
+# Full upgrade, not just openssl/libssl3t64 -- JFrog Xray flags CVEs across
+# the base image's whole OS package set (util-linux, login, rust-coreutils,
+# etc.), not only TLS libraries.
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /app/ && \
+	groupadd appgroup && \
+	useradd -Mg appgroup demo-runner-service && \
+	chown -R :appgroup /app/
+
+WORKDIR /app
+ARG JAR_NAME
+COPY demo/demo-runner-client/target/${JAR_NAME}.jar /app/app.jar
+USER demo-runner-service
+
+# Spring Boot repackaged jar -- must use -jar, not -cp.
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

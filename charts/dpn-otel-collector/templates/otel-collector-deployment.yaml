@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.otelCollector.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.otelCollector.name }}
+spec:
+  replicas: {{ .Values.otelCollector.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.otelCollector.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.otelCollector.name }}
+    spec:
+      containers:
+        - name: otel-collector
+          image: "{{ .Values.otelCollector.image.repository }}:{{ .Values.otelCollector.image.tag }}"
+          imagePullPolicy: {{ .Values.otelCollector.image.pullPolicy }}
+          args:
+            - "--config=/etc/otel/otel-collector-config.yaml"
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: {{ .Values.otelCollector.service.otlpGrpcPort }}
+            - containerPort: {{ .Values.otelCollector.service.otlpHttpPort }}
+          {{- with .Values.otelCollector.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Values.otelCollector.name }}-config

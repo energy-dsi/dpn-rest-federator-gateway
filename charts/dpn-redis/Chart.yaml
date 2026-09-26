@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dpn-redis
+description: Helm chart for the Redis cache used by the REST Federator gateway
+type: application
+version: 0.1.0
+appVersion: "7.4"

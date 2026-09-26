@@ -1,0 +1,397 @@
+# CD pipeline for the demo/ example applications.
+#
+# Two independent stages:
+#   1. Deploy_DemoRunnerServer -- the example backend (Deployment + Service)
+#   2. Run_DemoRunnerClient    -- the example consumer, as a one-shot Job
+#
+# HOW THE CLIENT RECEIVES ITS PARAMETERS
+# --------------------------------------
+# A Kubernetes Job's pod spec is immutable once created, so a Job cannot be
+# re-invoked with new arguments. Instead every run creates a NEW Job object:
+# job.nameSuffix is set to Build.BuildId, and the run parameters below (mpan,
+# postcode, ...) are passed through Helm into the container's env: block.
+#
+# Completed Jobs are kept for ttlSecondsAfterFinished (1h by default) so their
+# logs can be read:
+#   kubectl logs job/dpn-demo-runner-client-<buildId> -n <namespace>
+
+trigger: none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+      - sc-dpn-dev-001
+      - sc-dpn-dev-002
+      - sc-dpn-test-001
+      - sc-dpn-test-002
+      - sc-dpn-pdev-ppd-001
+      - sc-dpn-ptest-ppd-001
+      - sc-dpn-puat-ppd-001
+
+- name: environment
+  displayName: Environment Name
+  type: string
+  default: 'dev'
+  values:
+      - dev
+      - devtest
+      - test
+      - pdev
+      - ptest
+      - puat
+
+- name: cluster
+  displayName: Target DPN Cluster
+  type: string
+  default: 'dpn01'
+  values:
+    - dpn01
+    - dpn02
+
+- name: imageTag
+  type: string
+  displayName: 'Demo Runner image tag (the demo-runner CI run''s Build.BuildId)'
+
+- name: deployServer
+  type: boolean
+  default: true
+  displayName: 'Deploy the demo runner server'
+
+- name: runClient
+  type: boolean
+  default: true
+  displayName: 'Run the demo runner client Job'
+
+# ---- Demo run parameters (passed into the client Job's env) ----
+- name: mpan
+  type: string
+  default: '1000000000001'
+  displayName: 'Import MPAN (13 digits)'
+
+- name: postcode
+  type: string
+  default: 'SW1A 1AA'
+  displayName: 'Postcode'
+
+- name: assetId
+  type: string
+  default: 'none'
+  displayName: "Asset id (a UUID, or 'none' to omit -- the Run pipeline UI won't accept an empty string here)"
+
+- name: fspId
+  type: string
+  default: 'none'
+  displayName: "FSP id (a UUID, or 'none' for a random one -- the Run pipeline UI won't accept an empty string here)"
+
+# organisationName / productName are intentionally NOT pipeline parameters.
+# The demo-runner-client chart values files set both to "" (blank = target
+# every subscribed organisation and product), so a plain deploy runs against
+# the full subscribed registry. To narrow a run to a specific org/product,
+# edit the chart values file for the environment rather than passing it here.
+
+variables:
+  - name: SERVER_HELM_DIR
+    value: charts/dpn-demo-runner-server
+  - name: SERVER_RELEASE_NAME
+    value: dpn-demo-runner-server
+
+  - name: CLIENT_HELM_DIR
+    value: charts/dpn-demo-runner-client
+  - name: CLIENT_RELEASE_NAME
+    value: dpn-demo-runner-client
+
+  - name: VALUES_FILE
+    value: values-${{ parameters.environment }}-${{ parameters.cluster }}.yaml
+  - name: PARAMETERS_FILE
+    value: .pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json
+
+  # Approval group
+  - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-ppd
+  - ${{ elseif or(eq(parameters.environment, 'devtest'), eq(parameters.environment, 'test')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-devtest
+  - ${{ else }}:
+    - name: APPROVAL_GROUP
+      value: dsi-dev
+
+stages:
+
+  # ---------------------------------------------------------------
+  # Demo Runner Server — the backend the gateway proxies to.
+  #
+  # APPROVAL IS INTEGRATED INTO EACH DEPLOY STAGE — deliberately NOT a
+  # separate top-level approval stage, which the "Stages to run" selector
+  # can bypass (deselect the approval stage, run only the deploy stage).
+  # Each deploy stage begins with an environment-bound "Approve" deployment
+  # job (dsi-dev / dsi-devtest / dsi-ppd, routed by APPROVAL_GROUP) whose
+  # Approval check blocks until a named approver signs off; the real deploy
+  # job dependsOn it. Stage selection is stage-level, so the deploy job can
+  # never run without its in-stage approval.
+  # ---------------------------------------------------------------
+- ${{ if eq(parameters.deployServer, true) }}:
+  - stage: Deploy_DemoRunnerServer
+    displayName: "Deploy Demo Runner Server to AKS"
+    jobs:
+    - deployment: Approve
+      displayName: "Approval Gate"
+      environment: ${{ variables.APPROVAL_GROUP }}
+      pool:
+        name: '<<YOUR AGENT POOL>>'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - script: |
+                echo "Approved — deploying Demo Runner Server for ${{ parameters.environment }}-${{ parameters.cluster }}"
+    - job: DeployServer
+      displayName: "Helm Deploy - Demo Runner Server"
+      dependsOn: Approve
+
+      pool:
+        name: '<<YOUR AGENT POOL>>'
+
+      steps:
+      - checkout: self
+
+      - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+        - script: |
+            if [ "${{ parameters.cluster }}" == "dpn02" ]; then
+              echo "##[error]cluster=dpn02 is disabled for environment=${{ parameters.environment }}. This environment only has dpn01."
+              exit 1
+            fi
+          displayName: "Guard: dpn02 disabled for ${{ parameters.environment }}"
+
+      - script: |
+          echo "Loading config: $(PARAMETERS_FILE)"
+          if [ ! -f "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)" ]; then
+            echo "##[error]Config file not found: $(PARAMETERS_FILE)"
+            exit 1
+          fi
+          for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+            value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+            echo "##vso[task.setvariable variable=$param]$value"
+          done
+        displayName: Load Environment Config
+
+      - task: AzureCLI@2
+        displayName: "AKS Auth + Helm Deploy (Demo Runner Server)"
+        inputs:
+          azureSubscription: '${{ parameters.ServiceConnection }}'
+          scriptType: bash
+          scriptLocation: inlineScript
+          workingDirectory: '$(Build.SourcesDirectory)'
+          inlineScript: |
+            set -euo pipefail
+            cd "$(Build.SourcesDirectory)"
+
+            if ! command -v kubectl &>/dev/null || ! command -v kubelogin &>/dev/null; then
+              az aks install-cli --client-version 1.32.3 --kubelogin-version 0.2.18
+            fi
+
+            az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+            az aks get-credentials \
+              --resource-group $(RESOURCE_GROUP) \
+              --name $(AKS_CLUSTER) \
+              --overwrite-existing
+            kubelogin convert-kubeconfig -l azurecli
+
+            # No Vault truststore password fetch here: demo-runner-server no
+            # longer talks to Vault. It terminates HTTPS with keystore.jks from
+            # the mounted dpn-tls platform secret; any JKS-store passwords are
+            # injected from a Secret via secretKeyRef in the chart — nothing to
+            # pass on the command line.
+
+            echo "=========================================="
+            echo " HELM VALIDATION"
+            echo "=========================================="
+            helm lint "$(SERVER_HELM_DIR)"
+            helm upgrade --install $(SERVER_RELEASE_NAME) "$(SERVER_HELM_DIR)" \
+              -n $(NAMESPACE) \
+              --set demoRunnerServer.image.repository="$(CONTAINER_REGISTRY_URL)/dpn-demo-runner-server" \
+              --set demoRunnerServer.image.tag="${{ parameters.imageTag }}" \
+              -f "$(SERVER_HELM_DIR)/$(VALUES_FILE)" \
+              --dry-run --debug >/dev/null
+            echo "Helm dry-run successful"
+
+            echo "=========================================="
+            echo " HELM DEPLOY"
+            echo "=========================================="
+            helm upgrade --install $(SERVER_RELEASE_NAME) "$(SERVER_HELM_DIR)" \
+              -n $(NAMESPACE) \
+              --set demoRunnerServer.image.repository="$(CONTAINER_REGISTRY_URL)/dpn-demo-runner-server" \
+              --set demoRunnerServer.image.tag="${{ parameters.imageTag }}" \
+              -f "$(SERVER_HELM_DIR)/$(VALUES_FILE)" \
+              --debug
+
+            echo "=========================================="
+            echo " POST-DEPLOY VERIFICATION"
+            echo "=========================================="
+            SERVER_NAME=$(helm get values $(SERVER_RELEASE_NAME) -n $(NAMESPACE) -a -o json \
+              | jq -r '.demoRunnerServer.name')
+            if [ -z "$SERVER_NAME" ] || [ "$SERVER_NAME" == "null" ]; then
+              echo "##[error]Could not resolve the demo runner server name from Helm values"
+              exit 1
+            fi
+            echo "Demo runner server deployment: ${SERVER_NAME}"
+
+            kubectl rollout status deployment/${SERVER_NAME} -n $(NAMESPACE) --timeout=300s
+            kubectl get svc -n $(NAMESPACE) -l app=${SERVER_NAME}
+            kubectl get pods -n $(NAMESPACE) -l app=${SERVER_NAME}
+            helm status $(SERVER_RELEASE_NAME) -n $(NAMESPACE)
+
+            echo "=========================================="
+            echo " DEMO RUNNER SERVER DEPLOYMENT COMPLETE"
+            echo "=========================================="
+
+  # ---------------------------------------------------------------
+  # Demo Runner Client — one-shot Job, new object per run.
+  # ---------------------------------------------------------------
+- ${{ if eq(parameters.runClient, true) }}:
+  - stage: Run_DemoRunnerClient
+    displayName: "Run Demo Runner Client Job"
+    # Ordering only: run after the server stage when it's included. The stage is
+    # gated by its own in-stage Approve job below, so it never runs unapproved
+    # regardless of whether the server stage ran.
+    ${{ if eq(parameters.deployServer, true) }}:
+      dependsOn:
+        - Deploy_DemoRunnerServer
+    jobs:
+    - deployment: Approve
+      displayName: "Approval Gate"
+      environment: ${{ variables.APPROVAL_GROUP }}
+      pool:
+        name: '<<YOUR AGENT POOL>>'
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - script: |
+                echo "Approved — running Demo Runner Client for ${{ parameters.environment }}-${{ parameters.cluster }}"
+    - job: RunClientJob
+      displayName: "Helm Deploy - Demo Runner Client Job"
+      dependsOn: Approve
+
+      pool:
+        name: '<<YOUR AGENT POOL>>'
+
+      steps:
+      - checkout: self
+
+      - script: |
+          echo "Loading config: $(PARAMETERS_FILE)"
+          if [ ! -f "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)" ]; then
+            echo "##[error]Config file not found: $(PARAMETERS_FILE)"
+            exit 1
+          fi
+          for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+            value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+            echo "##vso[task.setvariable variable=$param]$value"
+          done
+        displayName: Load Environment Config
+
+      - task: AzureCLI@2
+        displayName: "AKS Auth + Create Demo Runner Client Job"
+        inputs:
+          azureSubscription: '${{ parameters.ServiceConnection }}'
+          scriptType: bash
+          scriptLocation: inlineScript
+          workingDirectory: '$(Build.SourcesDirectory)'
+          inlineScript: |
+            set -euo pipefail
+            cd "$(Build.SourcesDirectory)"
+
+            if ! command -v kubectl &>/dev/null || ! command -v kubelogin &>/dev/null; then
+              az aks install-cli --client-version 1.32.3 --kubelogin-version 0.2.18
+            fi
+
+            az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+            az aks get-credentials \
+              --resource-group $(RESOURCE_GROUP) \
+              --name $(AKS_CLUSTER) \
+              --overwrite-existing
+            kubelogin convert-kubeconfig -l azurecli
+
+            # The Run pipeline UI won't accept an empty string for a type: string
+            # parameter, so assetId/fspId default to the sentinel 'none' instead --
+            # translate that back to blank here, which is what the app treats as
+            # "omit assetId" / "generate a random fspId".
+            ASSET_ID="${{ parameters.assetId }}"
+            FSP_ID="${{ parameters.fspId }}"
+            if [ "$ASSET_ID" = "none" ]; then ASSET_ID=""; fi
+            if [ "$FSP_ID" = "none" ]; then FSP_ID=""; fi
+
+            echo "=========================================="
+            echo " RUN PARAMETERS"
+            echo "=========================================="
+            echo "  org / product: (from chart values — blank = all subscriptions)"
+            echo "  mpan         : ${{ parameters.mpan }}"
+            echo "  postcode     : ${{ parameters.postcode }}"
+            echo "  asset id     : ${ASSET_ID:-<none>}"
+            echo "  fsp id       : ${FSP_ID:-<random>}"
+
+            # The client reads its mTLS material from Vault too, so it needs the
+            # truststore password to reach Vault, same as the server stage.
+            # TRUSTSTORE-PASSWORD is the canonical, actively-rotated Key Vault
+            # object dpn-tls-cd (dpn-federator-certificate-manager) writes on
+            # every cert renewal. VAULT-TRUSTSTORE-PASSWORD is a bootstrap-only
+            # artifact (vault-tls-bootstrap-cd) that's never touched again once
+            # an environment is stood up, so it can drift stale after rotation.
+            VAULT_TRUSTSTORE_PASSWORD=$(az keyvault secret show \
+              --vault-name $(KEY_VAULT_NAME) \
+              --name TRUSTSTORE-PASSWORD \
+              --query value -o tsv)
+
+            echo "=========================================="
+            echo " HELM DEPLOY - CLIENT JOB"
+            echo "=========================================="
+            # nameSuffix makes each run a distinct Job object; a Job's pod spec
+            # cannot be changed in place.
+            helm lint "$(CLIENT_HELM_DIR)"
+            helm upgrade --install $(CLIENT_RELEASE_NAME) "$(CLIENT_HELM_DIR)" \
+              -n $(NAMESPACE) \
+              --set job.image.repository="$(CONTAINER_REGISTRY_URL)/dpn-demo-runner-client" \
+              --set job.image.tag="${{ parameters.imageTag }}" \
+              --set job.vault.truststorePassword="$VAULT_TRUSTSTORE_PASSWORD" \
+              --set job.nameSuffix="$(Build.BuildId)" \
+              --set job.env.mpan="${{ parameters.mpan }}" \
+              --set job.env.postcode="${{ parameters.postcode }}" \
+              --set job.env.assetId="$ASSET_ID" \
+              --set job.env.fspId="$FSP_ID" \
+              -f "$(CLIENT_HELM_DIR)/$(VALUES_FILE)" \
+              --debug
+
+            JOB_BASE=$(helm get values $(CLIENT_RELEASE_NAME) -n $(NAMESPACE) -a -o json \
+              | jq -r '.job.name')
+            JOB_NAME="${JOB_BASE}-$(Build.BuildId)"
+            echo "Job created: ${JOB_NAME}"
+
+            echo "=========================================="
+            echo " WAIT FOR JOB COMPLETION"
+            echo "=========================================="
+            # Wait for either outcome so the logs are always printed below.
+            kubectl wait --for=condition=complete --timeout=600s \
+              job/${JOB_NAME} -n $(NAMESPACE) && JOB_RESULT=complete || JOB_RESULT=failed
+
+            echo "=========================================="
+            echo " DEMO RUNNER CLIENT OUTPUT"
+            echo "=========================================="
+            kubectl logs job/${JOB_NAME} -n $(NAMESPACE) --tail=-1 || \
+              echo "##[warning]Could not retrieve Job logs"
+
+            if [ "$JOB_RESULT" != "complete" ]; then
+              echo "##[error]Demo runner client Job did not complete successfully"
+              kubectl describe job/${JOB_NAME} -n $(NAMESPACE) || true
+              exit 1
+            fi
+
+            echo "=========================================="
+            echo " DEMO RUNNER CLIENT RUN COMPLETE"
+            echo "=========================================="
