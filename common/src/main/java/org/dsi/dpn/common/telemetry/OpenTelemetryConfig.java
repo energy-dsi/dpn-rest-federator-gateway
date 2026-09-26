@@ -119,16 +119,19 @@ public final class OpenTelemetryConfig {
                                     new ComponentNameLogRecordProcessor(componentName), delegate))
                     .addSpanExporterCustomizer((exporter, config) -> {
                         SpanExporter result = truststore == null ? exporter : truststore.customizeSpanExporter(exporter);
-                        return bearerToken == null ? result : bearerToken.customizeSpanExporter(result);
+                        result = bearerToken == null ? result : bearerToken.customizeSpanExporter(result);
+                        return OtlpExportSuccessLogger.wrap(result);
                     })
                     .addMetricExporterCustomizer((exporter, config) -> {
                         MetricExporter result = truststore == null ? exporter : truststore.customizeMetricExporter(exporter);
-                        return bearerToken == null ? result : bearerToken.customizeMetricExporter(result);
+                        result = bearerToken == null ? result : bearerToken.customizeMetricExporter(result);
+                        return OtlpExportSuccessLogger.wrap(result);
                     })
                     .addLogRecordExporterCustomizer((exporter, config) -> {
                         LogRecordExporter result =
                                 truststore == null ? exporter : truststore.customizeLogRecordExporter(exporter);
-                        return bearerToken == null ? result : bearerToken.customizeLogRecordExporter(result);
+                        result = bearerToken == null ? result : bearerToken.customizeLogRecordExporter(result);
+                        return OtlpExportSuccessLogger.wrap(result);
                     })
                     .build();
             OpenTelemetrySdk sdk = autoConfigured.getOpenTelemetrySdk();

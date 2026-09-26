@@ -165,7 +165,35 @@ public class RedisUtil {
             String truststorePassword =
                     isTLSEnabled ? commonProperties.getProperty(REDIS_TRUSTSTORE_PASSWORD, "") : "";
 
-            instance = new RedisUtil(buildRedisConnection(host, port, isTLSEnabled, truststorePath, truststorePassword));
+            JedisPooled connection = buildRedisConnection(host, port, isTLSEnabled, truststorePath, truststorePassword);
+            // JedisPooled's constructor above only builds a connection pool - it does not
+            // eagerly open a socket, so none of the TLS setup logged just above actually proves
+            // a real handshake happened. PING forces one real connection to be borrowed from the
+            // pool right now, giving a single, unambiguous log line that the TLS handshake (when
+            // isTLSEnabled) actually completed, not just that it was configured. Deliberately
+            // non-fatal - caught and logged, not rethrown - matching this codebase's existing
+            // fail-open philosophy elsewhere (OpenTelemetryConfig, IdpTokenServiceClientSecretImpl):
+            // a transient Redis outage at startup should not crash the whole application, and unit
+            // tests that construct this singleton against a Properties-mocked host with no real
+            // Redis backend must still succeed.
+            try {
+                String pingResult = connection.ping();
+                LOGGER.info(
+                        "Redis connection verified ({}): PING -> '{}' [host={}, port={}]",
+                        isTLSEnabled ? "TLS handshake completed" : "plaintext",
+                        pingResult,
+                        host,
+                        port);
+            } catch (RuntimeException e) {
+                LOGGER.warn(
+                        "Redis connection verification PING failed [host={}, port={}, tls={}] - "
+                                + "continuing anyway, the connection pool will retry on first real use",
+                        host,
+                        port,
+                        isTLSEnabled,
+                        e);
+            }
+            instance = new RedisUtil(connection);
         }
         return instance;
     }

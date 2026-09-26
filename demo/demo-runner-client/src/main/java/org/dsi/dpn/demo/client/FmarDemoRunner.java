@@ -433,6 +433,7 @@ public class FmarDemoRunner {
         heartbeat.start();
         try {
             initProperties();
+            org.dsi.dpn.common.utils.SecurityPostureLogger.logSummary("demo-runner-client");
 
             DemoParameters params;
             try {
