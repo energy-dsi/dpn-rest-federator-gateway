@@ -4,9 +4,11 @@ package org.dsi.dpn.demo.server;
 
 import io.swagger.v3.oas.annotations.OpenAPIDefinition;
 import io.swagger.v3.oas.annotations.info.Info;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
+import org.dsi.dpn.common.utils.PropertyUtil;
 
 /**
  * Demo Runner Server - EXAMPLE backend service, deployed separately from the
@@ -25,6 +27,7 @@ import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
  * trust Vault's HTTPS calls — so, from the gateway's point of view, calling this
  * backend works exactly like calling the Vault service.
  */
+@Slf4j
 @SpringBootApplication
 @OpenAPIDefinition(info = @Info(
         title = "Demo Runner Server - FMAR Assets",
@@ -35,6 +38,16 @@ import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
 public class DemoRunnerServerApplication {
     public static void main(String[] args) {
         OpenTelemetryConfig.initialize();
+        // Loads FEDERATOR_SERVER_PROPERTIES (server.properties/common-configuration.properties,
+        // rendered by demo-runner-server-config.yaml) so redis.idp.* is available for
+        // KeycloakSessionGuard/IdpTokenServiceFactory.createRedisIdpTokenService() - used for
+        // Redis-gating and, when otel.oauth2.enabled, OTLP export auth (OtelBearerTokenSupport).
+        // Logged rather than fatal: unlike the gateway, this app still serves its own API
+        // without it - only Redis-gating and OTLP OAuth are affected.
+        if (!PropertyUtil.initializeProperties()) {
+            log.warn("Failed to initialise PropertyUtil from FEDERATOR_SERVER_PROPERTIES - "
+                    + "Redis-gating and OTLP OAuth2 export will not work");
+        }
         SpringApplication.run(DemoRunnerServerApplication.class, args);
     }
 }
