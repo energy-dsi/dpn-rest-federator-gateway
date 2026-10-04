@@ -101,7 +101,7 @@ public class FederatorCommonConfigEnvironmentPostProcessor
         } catch (Exception e) {
             log("Could not read federator common configuration ("
                     + e.getMessage() + "). Placeholders such as ${idp.keystore.path} "
-                    + "must be supplied another way, e.g. as environment variables.");
+                    + "must be supplied another way, e.g. as environment variables.", e);
             return null;
         }
     }
@@ -113,6 +113,17 @@ public class FederatorCommonConfigEnvironmentPostProcessor
      */
     private void log(String message) {
         System.out.println("[FederatorCommonConfig] " + message);
+    }
+
+    /**
+     * Like {@link #log(String)}, but also prints the full stack trace to stderr so the
+     * real cause is not silently discarded just because this runs before SLF4J is
+     * available - matches this application's "always capture the full stack trace"
+     * logging standard even in this pre-logging-init bootstrap path.
+     */
+    private void log(String message, Throwable t) {
+        log(message);
+        t.printStackTrace();
     }
 
     @Override

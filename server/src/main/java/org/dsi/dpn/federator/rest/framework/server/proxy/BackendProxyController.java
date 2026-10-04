@@ -163,8 +163,8 @@ public class BackendProxyController {
                     .body(e.getResponseBodyAsByteArray());
 
         } catch (ResourceAccessException e) {
-            log.error("Backend unreachable for {} {} (backend base {}): {}",
-                    method, request.getRequestURI(), backendProperties.baseUrl(), e.getMessage());
+            log.error("Backend unreachable for {} {} (backend base {})",
+                    method, request.getRequestURI(), backendProperties.baseUrl(), e);
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
