@@ -99,6 +99,7 @@ public class FederatorCommonConfigEnvironmentPostProcessor
             PropertyUtil.initializeProperties();
             return PropertyUtil.getPropertiesFromFilePath(COMMON_CONFIG);
         } catch (Exception e) {
+            e.printStackTrace();
             log("Could not read federator common configuration ("
                     + e.getMessage() + "). Placeholders such as ${idp.keystore.path} "
                     + "must be supplied another way, e.g. as environment variables.", e);
