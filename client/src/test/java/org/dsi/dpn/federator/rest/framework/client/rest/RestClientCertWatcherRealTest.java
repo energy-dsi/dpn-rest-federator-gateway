@@ -4,6 +4,9 @@ package org.dsi.dpn.federator.rest.framework.client.rest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,6 +22,7 @@ import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspClientVerificationSe
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.reactive.function.client.WebClient;
 
 /**
@@ -168,6 +172,11 @@ class RestClientCertWatcherRealTest {
         ThrowingClient client = new ThrowingClient();
         setKeystorePath(client, p12.toString());
 
+        Logger logger = (Logger) LoggerFactory.getLogger(RestClient.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
         Set<Thread> before = watcherThreadsSnapshot();
         client.startCertWatcher();
         Thread.sleep(300);
@@ -175,11 +184,33 @@ class RestClientCertWatcherRealTest {
         Thread watcherThread = newWatcherThread(before);
         assertThat(watcherThread).as("watcher thread should have started").isNotNull();
 
-        Files.writeString(p12, "rotated", StandardOpenOption.TRUNCATE_EXISTING);
-        watcherThread.join(5000);
+        try {
+            Files.writeString(p12, "rotated", StandardOpenOption.TRUNCATE_EXISTING);
+            watcherThread.join(5000);
 
-        assertThat(watcherThread.isAlive())
-                .as("watcher thread should have terminated after buildWebClient() threw")
-                .isFalse();
+            assertThat(watcherThread.isAlive())
+                    .as("watcher thread should have terminated after buildWebClient() threw")
+                    .isFalse();
+
+            // AC1/AC2 — the logged event must carry the human-readable message and the full
+            // stack trace (incl. the root cause "boom - simulated buildWebClient failure")
+            // together in one log entry, not as separate log lines.
+            ILoggingEvent event = appender.list.stream()
+                    .filter(e -> e.getFormattedMessage() != null
+                            && e.getFormattedMessage().contains("RestClient cert watcher error"))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError(
+                            "Expected a 'RestClient cert watcher error' log entry"));
+
+            assertThat(event.getFormattedMessage())
+                    .contains("boom - simulated buildWebClient failure");
+            assertThat(event.getThrowableProxy()).isNotNull();
+            assertThat(event.getThrowableProxy().getClassName())
+                    .isEqualTo(RuntimeException.class.getName());
+            assertThat(event.getThrowableProxy().getMessage())
+                    .isEqualTo("boom - simulated buildWebClient failure");
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 }

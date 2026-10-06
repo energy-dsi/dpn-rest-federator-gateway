@@ -99,7 +99,7 @@ public class DsiProductAuthorizationFilter extends OncePerRequestFilter {
                     .getPropertiesFromFilePath(COMMON_CONFIG_PROP)
                     .getProperty(IDP_CLIENT_ID_PROP, "");
         } catch (Exception e) {
-            log.warn("Could not read serverClientId: {}", e.getMessage());
+            log.warn("Could not read serverClientId", e);
             return "";
         }
     }
@@ -137,7 +137,7 @@ public class DsiProductAuthorizationFilter extends OncePerRequestFilter {
         try {
             config = producerConfigService.getProducerConfiguration();
         } catch (Exception e) {
-            log.error("Failed to fetch producer config: {}", e.getMessage());
+            log.error("Failed to fetch producer config for path={}", request.getRequestURI(), e);
             sendError(response, HttpStatus.FORBIDDEN, "Unable to verify authorization");
             return;
         }

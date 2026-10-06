@@ -244,16 +244,21 @@ public class RestFederatorServerConfig {
      */
     private static KeyStore loadTrustStore(String path, String password) throws Exception {
         char[] pw = password != null ? password.toCharArray() : null;
+        Exception lastFailure = null;
         for (String type : new String[] {"PKCS12", "JKS"}) {
             try (FileInputStream fis = new FileInputStream(path)) {
                 KeyStore ks = KeyStore.getInstance(type);
                 ks.load(fis, pw);
                 return ks;
             } catch (Exception e) {
-                log.debug("Could not load backend truststore '{}' as {}: {}", path, type, e.getMessage());
+                // One of the two formats failing here is expected - only logged at DEBUG
+                // in the loop itself; if both fail, the real cause is chained below rather
+                // than discarded, so the final thrown exception still carries it.
+                log.debug("Could not load backend truststore '{}' as {}", path, type, e);
+                lastFailure = e;
             }
         }
         throw new FederatorSslException(
-                "Could not load backend truststore '" + path + "' as PKCS12 or JKS", null);
+                "Could not load backend truststore '" + path + "' as PKCS12 or JKS", lastFailure);
     }
 }

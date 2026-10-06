@@ -206,6 +206,7 @@ public class IdpTokenServicePrivateJwtImpl extends AbstractIdpTokenService {
             return accessToken;
 
         } catch (InterruptedException e) {
+            e.printStackTrace();
             Thread.currentThread().interrupt();
             FederatorTokenException wrapped =
                     new FederatorTokenException("Thread interrupted while fetching token from IDP", e);
@@ -213,10 +214,12 @@ public class IdpTokenServicePrivateJwtImpl extends AbstractIdpTokenService {
             span.setStatus(StatusCode.ERROR, wrapped.getMessage());
             throw wrapped;
         } catch (FederatorTokenException e) {
+            e.printStackTrace();
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             throw e;
         } catch (Exception e) {
+            e.printStackTrace();
             FederatorTokenException wrapped = new FederatorTokenException(
                     "Error fetching token via private_key_jwt for node: " + managementNodeId, e);
             span.recordException(wrapped);

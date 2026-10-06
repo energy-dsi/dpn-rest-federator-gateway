@@ -26,7 +26,11 @@
          here; they render empty for log statements made outside any span. -->
     <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
         <encoder>
-            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} [trace_id=%X{trace_id:-}, span_id=%X{span_id:-}] - %msg%n</pattern>
+            <!-- app=OTEL_SERVICE_NAME ("demo-runner-server") distinguishes this service's
+                 logs from rest-federator-server's - same pattern across all three apps
+                 per the shared logging standard. Timestamp is full ISO-8601 with UTC
+                 offset, not just bare time-of-day. -->
+            <pattern>%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} app=${OTEL_SERVICE_NAME:-unknown-service} [%thread] %-5level %logger{36} [trace_id=%X{trace_id:-}, span_id=%X{span_id:-}] - %msg%n</pattern>
         </encoder>
     </appender>
 

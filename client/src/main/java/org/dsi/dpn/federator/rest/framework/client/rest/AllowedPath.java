@@ -99,7 +99,7 @@ public record AllowedPath(String requestType, String requestPath) {
             }
             return entries;
         } catch (Exception e) {
-            log.debug("Allowed-path config is not valid JSON: {}", e.getMessage());
+            log.warn("Allowed-path config is not valid JSON, falling back to loose parsing", e);
             return Collections.emptyList();
         }
     }
