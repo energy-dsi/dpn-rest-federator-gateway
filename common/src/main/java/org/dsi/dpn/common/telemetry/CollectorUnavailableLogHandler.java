@@ -37,11 +37,38 @@ final class CollectorUnavailableLogHandler extends Handler {
         }
 
         if (isExportConnectivityFailure(record)) {
-            LOGGER.warn("OTel Collector export failed - telemetry is being dropped until connectivity is restored.");
+            LOGGER.warn("OTel Collector export failed - telemetry is being dropped until connectivity is restored."
+                    + reasonOf(record));
             return;
         }
 
         fallback.publish(record);
+    }
+
+    /**
+     * Short, stack-trace-free reason for the failure (the SDK's own message, e.g. "Failed to export
+     * logs. Server responded with HTTP status code 4xx...", and the exception type/message), so a
+     * failing signal can be diagnosed instead of every cause reading identically.
+     */
+    private static String reasonOf(LogRecord record) {
+        StringBuilder reason = new StringBuilder();
+        String message = record.getMessage();
+        if (message != null && !message.isBlank()) {
+            reason.append(" Reason: ").append(truncate(message));
+        }
+        Throwable thrown = record.getThrown();
+        if (thrown != null) {
+            reason.append(" Cause: ").append(thrown.getClass().getSimpleName());
+            if (thrown.getMessage() != null) {
+                reason.append(": ").append(truncate(thrown.getMessage()));
+            }
+        }
+        return reason.toString();
+    }
+
+    private static String truncate(String s) {
+        String oneLine = s.replaceAll("\\s+", " ").trim();
+        return oneLine.length() <= 300 ? oneLine : oneLine.substring(0, 300) + "...";
     }
 
     private static boolean isExportConnectivityFailure(LogRecord record) {
