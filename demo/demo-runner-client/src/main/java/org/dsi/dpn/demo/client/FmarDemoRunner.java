@@ -51,7 +51,7 @@ public class FmarDemoRunner {
             OpenTelemetryConfig.get().getTracer("org.dsi.dpn.demo.client");
 
     /** Component name for heartbeat / OTEL identity on the consumer side. */
-    private static final String COMPONENT_NAME = "rest-federator-client";
+    private static final String COMPONENT_NAME = "demo-runner-client";
 
     private static final String ASSETS_PATH = "/api/v1/fmar/assets";
     private static final String FSP_PATH_PREFIX = "/api/v1/fmar/fsp/";

@@ -71,6 +71,8 @@ public final class OpenTelemetryConfig {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(OpenTelemetryConfig.class);
     private static volatile OpenTelemetry openTelemetry;
+    private static final java.util.Map<String, OpenTelemetry> COMPONENT_SDKS =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     static {
         // The OTel SDK's own exporters log via java.util.logging (JUL), not SLF4J/Logback —
@@ -95,7 +97,53 @@ public final class OpenTelemetryConfig {
 
         boolean exportingViaOtlp = false;
         try {
-            String componentName = resolveComponentName();
+            AutoConfiguredOpenTelemetrySdk autoConfigured = buildSdk(resolveComponentName(), false);
+            OpenTelemetrySdk sdk = autoConfigured.getOpenTelemetrySdk();
+            openTelemetry = sdk;
+
+            // Wires the Logback appender (see logback-spring.xml's "OpenTelemetry" appender) to
+            // this SDK instance, so every log event is exported as a genuine OTel LogRecord.
+            OpenTelemetryAppender.install(openTelemetry);
+            exportingViaOtlp = true;
+        } catch (Throwable t) {
+            LOGGER.warn("OTel Collector is not available - continuing without OTLP telemetry "
+                    + "export. Console/application logging is unaffected.");
+            openTelemetry = OpenTelemetry.noop();
+        }
+
+        // Any JVM exit (Ctrl+C, container stop, OOM, uncaught fatal error) runs this — ensures
+        // "service going down" is always logged at CRITICAL, regardless of cause.
+        String serviceName = System.getProperty("otel.service.name", System.getenv("OTEL_SERVICE_NAME"));
+        String displayName = serviceName != null ? serviceName : "rest-federator";
+        Runtime.getRuntime().addShutdownHook(new Thread(() ->
+                CriticalLogUtil.logCritical(LOGGER, displayName + " process is shutting down")));
+
+        if (exportingViaOtlp) {
+            LOGGER.info("OpenTelemetry SDK initialised; exporting via OTLP per OTEL_* environment variables");
+        }
+        return openTelemetry;
+    }
+
+    /**
+     * Builds an independent SDK whose Resource identifies it as {@code componentName}
+     * ({@code service.name} and {@code component.name}), exporting to the same OTLP collector with
+     * the same TLS/Bearer settings as the process-wide SDK, but NOT registering the Logback
+     * appender. Lets a reusable library (e.g. the REST client) show up as its own component in the
+     * dashboard, whatever application hosts it. Cached per name; fail-open to a no-op instance.
+     */
+    public static OpenTelemetry forComponent(String componentName) {
+        return COMPONENT_SDKS.computeIfAbsent(componentName, name -> {
+            try {
+                return buildSdk(name, true).getOpenTelemetrySdk();
+            } catch (Throwable t) {
+                LOGGER.warn("OTel Collector is not available for component {} - continuing without "
+                        + "OTLP telemetry export.", name);
+                return OpenTelemetry.noop();
+            }
+        });
+    }
+
+    private static AutoConfiguredOpenTelemetrySdk buildSdk(String componentName, boolean overrideServiceName) {
             // HTTPS support for OTLP export: trust the OTel Collector's HTTPS OTLP receiver
             // using the same JKS truststore already used elsewhere in this project (Vault's own
             // TLS connection, Redis TLS), via the OTEL_EXPORTER_OTLP_TRUSTSTORE_PATH/_PASSWORD
@@ -111,7 +159,10 @@ public final class OpenTelemetryConfig {
             // apply to the very same exporter instance, in either order, without interfering -
             // see OtelBearerTokenSupport's Javadoc.
             OtelBearerTokenSupport bearerToken = OtelBearerTokenSupport.resolve();
-            AutoConfiguredOpenTelemetrySdk autoConfigured = AutoConfiguredOpenTelemetrySdk.builder()
+            return AutoConfiguredOpenTelemetrySdk.builder()
+                    .addPropertiesCustomizer(config -> overrideServiceName
+                            ? java.util.Map.of("otel.service.name", componentName)
+                            : java.util.Map.of())
                     // Primary mechanism: stamp "component.name" onto the SDK Resource (once per
                     // process), not per log record. The downstream health-monitoring Data Prepper
                     // pipeline groups the "Component Health State" dashboard by scanning
@@ -150,30 +201,6 @@ public final class OpenTelemetryConfig {
                         return OtlpExportSuccessLogger.wrap(result);
                     })
                     .build();
-            OpenTelemetrySdk sdk = autoConfigured.getOpenTelemetrySdk();
-            openTelemetry = sdk;
-
-            // Wires the Logback appender (see logback-spring.xml's "OpenTelemetry" appender) to
-            // this SDK instance, so every log event is exported as a genuine OTel LogRecord.
-            OpenTelemetryAppender.install(openTelemetry);
-            exportingViaOtlp = true;
-        } catch (Throwable t) {
-            LOGGER.warn("OTel Collector is not available - continuing without OTLP telemetry "
-                    + "export. Console/application logging is unaffected.");
-            openTelemetry = OpenTelemetry.noop();
-        }
-
-        // Any JVM exit (Ctrl+C, container stop, OOM, uncaught fatal error) runs this — ensures
-        // "service going down" is always logged at CRITICAL, regardless of cause.
-        String serviceName = System.getProperty("otel.service.name", System.getenv("OTEL_SERVICE_NAME"));
-        String displayName = serviceName != null ? serviceName : "rest-federator";
-        Runtime.getRuntime().addShutdownHook(new Thread(() ->
-                CriticalLogUtil.logCritical(LOGGER, displayName + " process is shutting down")));
-
-        if (exportingViaOtlp) {
-            LOGGER.info("OpenTelemetry SDK initialised; exporting via OTLP per OTEL_* environment variables");
-        }
-        return openTelemetry;
     }
 
     /**
