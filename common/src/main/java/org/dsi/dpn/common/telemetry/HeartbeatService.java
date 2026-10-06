@@ -148,6 +148,7 @@ public final class HeartbeatService {
             event.log("Heartbeat: {} is {}", componentName, status);
         } catch (Exception e) {
             // Never let one bad beat kill the scheduled task.
+            e.printStackTrace();
             logger.atWarn()
                     .addKeyValue("component.name", componentName)
                     .addKeyValue("error.type", e.getClass().getSimpleName())

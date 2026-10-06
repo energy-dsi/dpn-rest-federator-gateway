@@ -249,6 +249,7 @@ public class RestClient {
             log.info("{} {} -> {}", method, url, result);
             return result;
         } catch (WebClientResponseException e) {
+            e.printStackTrace();
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new RuntimeException(method + " failed: HTTP " + e.getStatusCode()
@@ -344,6 +345,7 @@ public class RestClient {
             log.info("{} {} -> {}", method, url, result);
             return result;
         } catch (WebClientResponseException e) {
+            e.printStackTrace();
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new RuntimeException(method + " failed: HTTP " + e.getStatusCode()
@@ -395,6 +397,7 @@ public class RestClient {
                     handler, InMemoryConfigurationStore.getInstance());
             processConfig(configService.getConsumerConfiguration());
         } catch (Exception e) {
+            e.printStackTrace();
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new IllegalStateException(
@@ -535,6 +538,7 @@ public class RestClient {
                 Thread.currentThread().interrupt();
                 log.info("RestClient cert watcher stopped");
             } catch (Exception e) {
+                e.printStackTrace();
                 log.error("RestClient cert watcher error: {}", e.getMessage(), e);
             }
         }, "rest-client-cert-watcher");
@@ -645,6 +649,7 @@ public class RestClient {
                     .build();
 
         } catch (Exception e) {
+            e.printStackTrace();
             throw new IllegalStateException(
                     "Failed to build mTLS WebClient: " + e.getMessage(), e);
         }

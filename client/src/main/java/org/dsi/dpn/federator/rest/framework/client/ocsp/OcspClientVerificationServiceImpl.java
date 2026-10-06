@@ -102,8 +102,7 @@ public class OcspClientVerificationServiceImpl implements OcspClientVerification
             status = checkStatus(producerClientId);
             span.setAttribute("dpn.certificate.verification_status", status.name());
         } catch (Exception e) {
-            log.warn("Client OCSP check failed for producerClientId={}: {}",
-                    producerClientId, e.getMessage());
+            log.warn("Client OCSP check failed for producerClientId={}", producerClientId, e);
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
         } finally {
