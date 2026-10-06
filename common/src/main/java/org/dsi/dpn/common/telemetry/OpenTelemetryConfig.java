@@ -10,6 +10,7 @@ import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk;
 import io.opentelemetry.sdk.logs.LogRecordProcessor;
 import io.opentelemetry.sdk.logs.export.LogRecordExporter;
 import io.opentelemetry.sdk.metrics.export.MetricExporter;
+import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -111,9 +112,24 @@ public final class OpenTelemetryConfig {
             // see OtelBearerTokenSupport's Javadoc.
             OtelBearerTokenSupport bearerToken = OtelBearerTokenSupport.resolve();
             AutoConfiguredOpenTelemetrySdk autoConfigured = AutoConfiguredOpenTelemetrySdk.builder()
-                    // Stamp "component.name" onto every emitted log record so downstream log
-                    // pipelines can attribute records to a component without editing every
-                    // individual log call site.
+                    // Primary mechanism: stamp "component.name" onto the SDK Resource (once per
+                    // process), not per log record. The downstream health-monitoring Data Prepper
+                    // pipeline groups the "Component Health State" dashboard by scanning
+                    // resourceLogs[0].resource.attributes[0..8] for a literal "component.name" key
+                    // - a small, stable array (just service.name + a handful of telemetry.sdk.*
+                    // defaults here, no resource-detector dependency adds more). Mirrors
+                    // certificate-manager's identical fix for the same Data Prepper behaviour
+                    // (see that repo's application.yml management.opentelemetry.resource-attributes).
+                    // Verified this project has no OTEL_RESOURCE_ATTRIBUTES set and no
+                    // opentelemetry-resources detector dependency, so this lands within that range.
+                    .addResourceCustomizer((resource, config) ->
+                            resource.toBuilder().put("component.name", componentName).build())
+                    // Secondary/belt-and-suspenders only: also stamps "component.name" onto every
+                    // individual log record. This array is NOT stable - heartbeat logs alone carry
+                    // 7+ other attributes - so Data Prepper's per-log-record positional scan
+                    // (attributes[0..13]) cannot reliably find it here; the resource attribute
+                    // above is what actually makes the dashboard work. Kept only because some
+                    // other downstream consumer might already depend on finding it per-record.
                     .addLogRecordProcessorCustomizer((delegate, config) ->
                             LogRecordProcessor.composite(
                                     new ComponentNameLogRecordProcessor(componentName), delegate))
