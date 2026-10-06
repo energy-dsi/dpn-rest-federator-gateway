@@ -125,7 +125,14 @@ public class RestClient {
      */
     public static final String COMPONENT_NAME = "rest-federator-client";
 
-    private static final ComponentTelemetry TELEMETRY = ComponentTelemetry.of(COMPONENT_NAME);
+    /**
+     * Every log line from this library (RestClient, the client OCSP service, ...) is reported under
+     * {@link #COMPONENT_NAME}, not under whichever application hosts it.
+     */
+    private static final String LIBRARY_LOGGER = "org.dsi.dpn.federator.rest.framework.client";
+
+    private static final ComponentTelemetry TELEMETRY =
+            ComponentTelemetry.of(COMPONENT_NAME).bridgeLogsFrom(LIBRARY_LOGGER);
     private static final Tracer TRACER =
             TELEMETRY.tracer("org.dsi.dpn.federator.rest.framework.client.rest");
 
@@ -192,10 +199,21 @@ public class RestClient {
         TELEMETRY.startHeartbeat(() -> registry.isEmpty() ? "degraded" : "healthy");
     }
 
+    /**
+     * Severity of a "rest_client_request" event: 4xx are caller/data outcomes (e.g. an expected
+     * "not found" or "conflict") and are WARN; 5xx, I/O errors and other exceptions are ERROR.
+     */
+    static Severity severityFor(String outcome, int httpStatus) {
+        if ("success".equals(outcome)) {
+            return Severity.INFO;
+        }
+        return httpStatus >= 400 && httpStatus < 500 ? Severity.WARN : Severity.ERROR;
+    }
+
     /** One "rest_client_request" event per outbound call, on this client's own Resource. */
     private void logCall(String method, ProductKey key, String path, String outcome,
                          int httpStatus, long startNanos) {
-        TELEMETRY.log("success".equals(outcome) ? Severity.INFO : Severity.ERROR,
+        TELEMETRY.log(severityFor(outcome, httpStatus),
                 "rest_client_request",
                 method + " " + path + " -> " + outcome + (httpStatus > 0 ? " (HTTP " + httpStatus + ")" : ""),
                 Map.of("http.method", method,

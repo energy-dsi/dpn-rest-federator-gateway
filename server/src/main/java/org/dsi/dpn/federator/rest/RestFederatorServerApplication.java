@@ -2,8 +2,12 @@
 // © Crown Copyright 2026. National Digital Twin Programme.
 package org.dsi.dpn.federator.rest;
 
+import io.opentelemetry.instrumentation.logback.appender.v1_0.OpenTelemetryAppender;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.event.ApplicationPreparedEvent;
+import org.springframework.context.ApplicationListener;
 import org.dsi.dpn.common.service.secret.VaultFileBasedSslBundleInitializer;
 import org.dsi.dpn.common.telemetry.HeartbeatService;
 import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
@@ -36,6 +40,15 @@ public class RestFederatorServerApplication {
         // before Spring so a beat is emitted even if context startup is slow, and
         // registers its own shutdown hook.
         HeartbeatService.startFromEnv(COMPONENT_NAME);
-        SpringApplication.run(RestFederatorServerApplication.class, args);
+        SpringApplication app = new SpringApplication(RestFederatorServerApplication.class);
+        // Spring Boot re-initialises Logback from logback.xml, which drops the OTLP appender that
+        // OpenTelemetryConfig.initialize() attached; without this, only the handful of records
+        // emitted before Spring starts are ever exported and the dashboard goes silent.
+        app.addListeners((ApplicationListener<ApplicationPreparedEvent>) event -> {
+            OpenTelemetryAppender.install(OpenTelemetryConfig.get());
+            LoggerFactory.getLogger(RestFederatorServerApplication.class)
+                    .info("OpenTelemetry log appender re-attached after logging system initialisation");
+        });
+        app.run(args);
     }
 }
