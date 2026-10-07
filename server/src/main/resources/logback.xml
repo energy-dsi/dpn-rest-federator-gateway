@@ -83,6 +83,19 @@
     <logger name="io.opentelemetry" level="WARN" additivity="false">
         <appender-ref ref="ASYNC_CONSOLE"/>
     </logger>
+    <!-- LOOP BREAKER (same reason). OtlpExportSuccessLogger logs one INFO line per successful OTLP
+         export. If that line reached the OpenTelemetry appender it would itself be exported, succeed,
+         and log another line - one export per second, forever, and the dashboard pipeline (which keeps
+         only the first record of each batch) would then show almost nothing but these lines. Keep them
+         on stdout only; the confirmation stays visible in the pod log. -->
+    <logger name="org.dsi.dpn.common.telemetry.OtlpExportSuccessLogger" level="INFO" additivity="false">
+        <appender-ref ref="ASYNC_CONSOLE"/>
+    </logger>
+    <!-- LOOP BREAKER (second half). Every OTLP export asks this token service for the Bearer token ON THE
+         EXPORTER'S OWN THREAD, and it logs "Using cached access token" at DEBUG each time; that record is
+         exported, which asks for the token again... one record per second, forever. INFO keeps the
+         useful "Access token fetched" line and drops the per-export DEBUG noise. -->
+    <logger name="org.dsi.dpn.common.service.idp.IdpTokenServiceClientSecretImpl" level="INFO"/>
 
     <!-- Two independent delivery chains over the same events: OTEL_MDC ->
          ASYNC_CONSOLE for stdout, and OpenTelemetry for OTLP. Each event

@@ -77,6 +77,15 @@
     <logger name="io.opentelemetry" level="WARN" additivity="false">
         <appender-ref ref="ASYNC_CONSOLE"/>
     </logger>
+    <!-- LOOP BREAKER (same reason). OtlpExportSuccessLogger logs one INFO line per successful OTLP
+         export; if it reached the OpenTelemetry appender, that line would itself be exported and log
+         another. Keep them on stdout only. -->
+    <logger name="org.dsi.dpn.common.telemetry.OtlpExportSuccessLogger" level="INFO" additivity="false">
+        <appender-ref ref="ASYNC_CONSOLE"/>
+    </logger>
+    <!-- LOOP BREAKER (second half): each OTLP export logs "Using cached access token" at DEBUG on the
+         exporter's own thread, and that record is exported in turn. INFO drops the per-export noise. -->
+    <logger name="org.dsi.dpn.common.service.idp.IdpTokenServiceClientSecretImpl" level="INFO"/>
 
     <!-- Two independent delivery chains over the same events: OTEL_MDC ->
          ASYNC_CONSOLE for stdout, and OpenTelemetry for OTLP. Each event
