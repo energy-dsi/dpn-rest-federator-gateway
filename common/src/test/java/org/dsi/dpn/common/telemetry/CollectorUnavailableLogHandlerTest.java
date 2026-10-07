@@ -2,8 +2,12 @@
 // © Crown Copyright 2026. National Digital Twin Programme.
 package org.dsi.dpn.common.telemetry;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.net.UnknownHostException;
@@ -13,6 +17,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 /**
  * Unit tests for {@link CollectorUnavailableLogHandler} - previously entirely untested, despite
@@ -135,6 +140,31 @@ class CollectorUnavailableLogHandlerTest {
         record.setThrown(new IllegalStateException("not a connectivity failure"));
 
         assertThatCode(() -> handler.publish(record)).doesNotThrowAnyException();
+    }
+
+    @Test
+    @DisplayName("the intercepted warning carries the SDK's message and the exception type/message, "
+            + "so a failing signal can be diagnosed")
+    void publish_interceptedWarning_includesReason() {
+        Logger logger = (Logger) LoggerFactory.getLogger(CollectorUnavailableLogHandler.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            LogRecord record = new LogRecord(Level.WARNING,
+                    "Failed to export logs. Server responded with HTTP status code 503.");
+            record.setThrown(new SocketTimeoutException("timeout after 10s"));
+
+            handler.publish(record);
+
+            assertThat(appender.list).hasSize(1);
+            assertThat(appender.list.get(0).getFormattedMessage())
+                    .startsWith("OTel Collector export failed")
+                    .contains("Reason: Failed to export logs. Server responded with HTTP status code 503.")
+                    .contains("Cause: SocketTimeoutException: timeout after 10s");
+        } finally {
+            logger.detachAppender(appender);
+        }
     }
 
     @Test
