@@ -323,7 +323,6 @@ public class RestClient {
             logCall(method, key, path, "success", 200, startNanos);
             return result;
         } catch (WebClientResponseException e) {
-            e.printStackTrace();
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             logCall(method, key, path, "failure", e.getStatusCode().value(), startNanos);
@@ -427,7 +426,6 @@ public class RestClient {
             logCall(method, key, path, "success", 200, startNanos);
             return result;
         } catch (WebClientResponseException e) {
-            e.printStackTrace();
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             logCall(method, key, path, "failure", e.getStatusCode().value(), startNanos);
