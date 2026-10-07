@@ -249,7 +249,6 @@ public class RestClient {
             log.info("{} {} -> {}", method, url, result);
             return result;
         } catch (WebClientResponseException e) {
-            e.printStackTrace();
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new RuntimeException(method + " failed: HTTP " + e.getStatusCode()
@@ -345,7 +344,6 @@ public class RestClient {
             log.info("{} {} -> {}", method, url, result);
             return result;
         } catch (WebClientResponseException e) {
-            e.printStackTrace();
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
             throw new RuntimeException(method + " failed: HTTP " + e.getStatusCode()
