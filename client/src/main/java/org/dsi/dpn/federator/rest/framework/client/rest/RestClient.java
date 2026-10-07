@@ -3,6 +3,7 @@
 package org.dsi.dpn.federator.rest.framework.client.rest;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.opentelemetry.api.logs.Severity;
 import io.opentelemetry.api.trace.Span;
 import io.opentelemetry.api.trace.SpanKind;
 import io.opentelemetry.api.trace.StatusCode;
@@ -22,6 +23,7 @@ import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -48,7 +50,7 @@ import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspClientVerificationSe
 import org.dsi.dpn.federator.rest.framework.client.ocsp.OcspStatus;
 
 import org.dsi.dpn.common.storage.InMemoryConfigurationStore;
-import org.dsi.dpn.common.telemetry.OpenTelemetryConfig;
+import org.dsi.dpn.common.telemetry.ComponentTelemetry;
 
 /**
  * FRAMEWORK - do not modify.
@@ -117,8 +119,22 @@ public class RestClient {
     private static final String PRODUCT_TYPE_REST = "rest";
     private static final String BEARER           = "Bearer ";
 
+    /**
+     * Own telemetry identity: everything this client does is reported as component
+     * "rest-federator-client" (its own OTel Resource), whichever application hosts it.
+     */
+    public static final String COMPONENT_NAME = "rest-federator-client";
+
+    /**
+     * Every log line from this library (RestClient, the client OCSP service, ...) is reported under
+     * {@link #COMPONENT_NAME}, not under whichever application hosts it.
+     */
+    private static final String LIBRARY_LOGGER = "org.dsi.dpn.federator.rest.framework.client";
+
+    private static final ComponentTelemetry TELEMETRY =
+            ComponentTelemetry.of(COMPONENT_NAME).bridgeLogsFrom(LIBRARY_LOGGER);
     private static final Tracer TRACER =
-            OpenTelemetryConfig.get().getTracer("org.dsi.dpn.federator.rest.framework.client.rest");
+            TELEMETRY.tracer("org.dsi.dpn.federator.rest.framework.client.rest");
 
     private final IdpTokenService idpTokenService;
     private final Duration        timeout;
@@ -151,6 +167,62 @@ public class RestClient {
         startCertWatcher();
 
         log.info("RestClient initialised: {} REST product(s) registered", registry.size());
+        logBootstrapState();
+    }
+
+    /**
+     * Reports the bootstrapped runtime state (subscriptions, IDP auth mode, mTLS identity source,
+     * OCSP wiring) as one "rest_client_bootstrap" event, plus a periodic "component.heartbeat"
+     * (immediate, then every HEARTBEAT_INTERVAL_SECONDS) so the component stays healthy in the
+     * dashboard. Both are emitted on this client's own Resource ({@link #COMPONENT_NAME}), not the
+     * host application's.
+     */
+    private void logBootstrapState() {
+        String subscriptions = registry.values().stream()
+                .map(reg -> reg.organisation() + "/" + reg.productName()
+                        + " producerId=" + reg.producerId()
+                        + " baseUrl=" + reg.baseUrl()
+                        + " allowedPaths=" + reg.allowedPaths().size())
+                .collect(Collectors.joining(" | "));
+        boolean mtlsFromVault = org.dsi.dpn.common.service.secret.VaultTlsSupport.isVaultTlsEnabled();
+        String idpImpl = idpTokenService.getClass().getSimpleName();
+
+        TELEMETRY.log(Severity.INFO, "rest_client_bootstrap",
+                "RestClient bootstrap state: " + registry.size() + " subscription(s), mTLS identity from "
+                        + (mtlsFromVault ? "Vault" : "file") + ", IDP token service=" + idpImpl,
+                Map.of("subscriptions.count", registry.size(),
+                        "subscriptions", subscriptions,
+                        "idp.token.service.impl", idpImpl,
+                        "mtls.identity.source", mtlsFromVault ? "vault" : "file",
+                        "ocsp.verification.configured", ocspService != null,
+                        "http.client.ready", true));
+        TELEMETRY.startHeartbeat(() -> registry.isEmpty() ? "degraded" : "healthy");
+    }
+
+    /**
+     * Severity of a "rest_client_request" event: 4xx are caller/data outcomes (e.g. an expected
+     * "not found" or "conflict") and are WARN; 5xx, I/O errors and other exceptions are ERROR.
+     */
+    static Severity severityFor(String outcome, int httpStatus) {
+        if ("success".equals(outcome)) {
+            return Severity.INFO;
+        }
+        return httpStatus >= 400 && httpStatus < 500 ? Severity.WARN : Severity.ERROR;
+    }
+
+    /** One "rest_client_request" event per outbound call, on this client's own Resource. */
+    private void logCall(String method, ProductKey key, String path, String outcome,
+                         int httpStatus, long startNanos) {
+        TELEMETRY.log(severityFor(outcome, httpStatus),
+                "rest_client_request",
+                method + " " + path + " -> " + outcome + (httpStatus > 0 ? " (HTTP " + httpStatus + ")" : ""),
+                Map.of("http.method", method,
+                        "url.path", path,
+                        "dpn.organisation", key.organisation(),
+                        "dpn.product_name", key.productName(),
+                        "request.outcome", outcome,
+                        "http.status_code", (long) httpStatus,
+                        "duration.ms", (System.nanoTime() - startNanos) / 1_000_000L));
     }
 
 
@@ -226,6 +298,7 @@ public class RestClient {
                               Function<WebClient, WebClient.RequestHeadersUriSpec<?>> verb,
                               ProductKey key, String path,
                               Map<String, String> extraHeaders) {
+        long startNanos = System.nanoTime();
         Span span = startSpan(method, key, path);
         try (Scope scope = span.makeCurrent()) {
             ProductRegistration reg = resolve(key);
@@ -247,13 +320,20 @@ public class RestClient {
                     .block();
             String result = resp != null ? resp.toString() : null;
             log.info("{} {} -> {}", method, url, result);
+            logCall(method, key, path, "success", 200, startNanos);
             return result;
         } catch (WebClientResponseException e) {
             e.printStackTrace();
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
+            logCall(method, key, path, "failure", e.getStatusCode().value(), startNanos);
             throw new RuntimeException(method + " failed: HTTP " + e.getStatusCode()
                     + " for " + key + " path=" + path, e);
+        } catch (RuntimeException e) {
+            span.recordException(e);
+            span.setStatus(StatusCode.ERROR, String.valueOf(e.getMessage()));
+            logCall(method, key, path, "error", 0, startNanos);
+            throw e;
         } finally {
             span.end();
         }
@@ -320,6 +400,7 @@ public class RestClient {
                           Function<WebClient, WebClient.RequestBodyUriSpec> verb,
                           ProductKey key, String path,
                           String jsonPayload, Map<String, String> extraHeaders) {
+        long startNanos = System.nanoTime();
         Span span = startSpan(method, key, path);
         try (Scope scope = span.makeCurrent()) {
             ProductRegistration reg = resolve(key);
@@ -343,13 +424,20 @@ public class RestClient {
                     .block();
             String result = resp != null ? resp.toString() : null;
             log.info("{} {} -> {}", method, url, result);
+            logCall(method, key, path, "success", 200, startNanos);
             return result;
         } catch (WebClientResponseException e) {
             e.printStackTrace();
             span.recordException(e);
             span.setStatus(StatusCode.ERROR, e.getMessage());
+            logCall(method, key, path, "failure", e.getStatusCode().value(), startNanos);
             throw new RuntimeException(method + " failed: HTTP " + e.getStatusCode()
                     + " for " + key + " path=" + path, e);
+        } catch (RuntimeException e) {
+            span.recordException(e);
+            span.setStatus(StatusCode.ERROR, String.valueOf(e.getMessage()));
+            logCall(method, key, path, "error", 0, startNanos);
+            throw e;
         } finally {
             span.end();
         }
