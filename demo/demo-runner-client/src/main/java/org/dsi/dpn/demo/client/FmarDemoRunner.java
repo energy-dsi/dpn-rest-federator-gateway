@@ -47,8 +47,15 @@ public class FmarDemoRunner {
 
     private static final Logger log = LoggerFactory.getLogger(FmarDemoRunner.class);
 
-    private static final Tracer TRACER =
-            OpenTelemetryConfig.get().getTracer("org.dsi.dpn.demo.client");
+    /**
+     * Deliberately NOT a static field. {@code OpenTelemetryConfig.get()} starts the OpenTelemetry SDK
+     * (and its background log exporter) on first use, so a static {@code Tracer} would start it when
+     * the JVM loads this class - before {@link #main} can initialise {@code PropertyUtil}, which the
+     * exporter's Bearer token needs. Resolved on use instead, after {@code main} has set things up.
+     */
+    private static Tracer tracer() {
+        return OpenTelemetryConfig.get().getTracer("org.dsi.dpn.demo.client");
+    }
 
     /** Component name for heartbeat / OTEL identity on the consumer side. */
     private static final String COMPONENT_NAME = "demo-runner-client";
@@ -80,7 +87,7 @@ public class FmarDemoRunner {
 
     public void run() {
         // Root span for the whole run so every log line below shares one trace_id.
-        Span root = TRACER.spanBuilder("FmarDemoRunner.run")
+        Span root = tracer().spanBuilder("FmarDemoRunner.run")
                 .setAttribute("dpn.organisation", params.organisation())
                 .setAttribute("dpn.product_name", params.productName())
                 .startSpan();
@@ -168,7 +175,7 @@ public class FmarDemoRunner {
 
     /** Runs a demo step inside its own child span so each step is distinct in the trace. */
     private void inSpan(String name, Runnable step) {
-        Span span = TRACER.spanBuilder(name).startSpan();
+        Span span = tracer().spanBuilder(name).startSpan();
         try (Scope scope = span.makeCurrent()) {
             step.run();
         } finally {
@@ -422,7 +429,12 @@ public class FmarDemoRunner {
      * the same file the gRPC Federator client uses.
      */
     public static void main(String[] args) {
-        org.dsi.dpn.common.telemetry.OpenTelemetryConfig.initialize();
+        // Configuration BEFORE telemetry: starting the OTel SDK also starts its log exporter, whose
+        // Bearer token needs PropertyUtil. Otherwise the exporter races PropertyUtil's initialisation
+        // (the Vault login) and the SDK drops those records with "Property Util not properly
+        // initialised". A configuration failure is held and re-thrown below, exactly where
+        // initProperties() used to throw it, so failure behaviour is unchanged.
+        RuntimeException configFailure = initialiseConfigurationThenTelemetry(FmarDemoRunner::initProperties, OpenTelemetryConfig::initialize);
 
         // Consumer-side heartbeat. Unlike the long-running gateway, which beats on a
         // 15-minute schedule, the client is a one-shot Job: HeartbeatService emits
@@ -432,7 +444,7 @@ public class FmarDemoRunner {
         HeartbeatService heartbeat = HeartbeatService.create(COMPONENT_NAME);
         heartbeat.start();
         try {
-            initProperties();
+            rethrowIfFailed(configFailure);
             org.dsi.dpn.common.utils.SecurityPostureLogger.logSummary("demo-runner-client");
 
             DemoParameters params;
@@ -464,6 +476,30 @@ public class FmarDemoRunner {
      * PropertyUtil.init(String) is a classpath-only lookup, so a filesystem path
      * in FEDERATOR_CLIENT_PROPERTIES must be loaded via init(File) instead.
      */
+    /**
+     * Runs the configuration initialisation, THEN starts telemetry.
+     *
+     * @return the configuration failure, if any, for the caller to re-throw where it always did -
+     *         telemetry is started either way, so the failure is still reported and traced
+     */
+    static RuntimeException initialiseConfigurationThenTelemetry(Runnable configurationInit, Runnable telemetryInit) {
+        RuntimeException failure = null;
+        try {
+            configurationInit.run();
+        } catch (RuntimeException e) {
+            failure = e;
+        }
+        telemetryInit.run();
+        return failure;
+    }
+
+    /** Re-throws a configuration failure held by {@code main()}, where {@code initProperties()} used to throw it. */
+    static void rethrowIfFailed(RuntimeException configurationFailure) {
+        if (configurationFailure != null) {
+            throw configurationFailure;
+        }
+    }
+
     private static void initProperties() {
         String propsPath = System.getenv()
                 .getOrDefault("FEDERATOR_CLIENT_PROPERTIES", "client.properties");
