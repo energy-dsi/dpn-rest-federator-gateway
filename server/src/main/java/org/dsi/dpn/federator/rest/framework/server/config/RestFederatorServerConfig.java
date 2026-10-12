@@ -27,7 +27,6 @@ import org.dsi.dpn.common.utils.IdpTokenServiceFactory;
 import org.dsi.dpn.common.utils.HttpClientFactoryUtils;
 import org.dsi.dpn.common.utils.ObjectMapperUtil;
 import org.dsi.dpn.common.utils.PropertyUtil;
-import org.dsi.dpn.common.utils.SecurityPostureLogger;
 import org.dsi.dpn.federator.rest.framework.server.ocsp.OcspVerificationService;
 import org.dsi.dpn.federator.rest.framework.server.ocsp.OcspVerificationServiceImpl;
 
@@ -124,11 +123,6 @@ public class RestFederatorServerConfig {
     public IdpTokenService redisIdpTokenService() {
         IdpTokenService redisIdpTokenService = IdpTokenServiceFactory.createRedisIdpTokenService();
         org.dsi.dpn.common.utils.KeycloakSessionGuard.configure(redisIdpTokenService::fetchToken);
-        // Logged here, not earlier: this is the first point every relevant config value (Redis
-        // TLS, Redis-gating Keycloak client, OTLP HTTPS/OAuth env vars) is guaranteed already
-        // resolved - a single, consolidated block for whoever needs to confirm the full security
-        // posture from the log alone, without piecing it together from scattered lines.
-        SecurityPostureLogger.logSummary("rest-federator-server");
         return redisIdpTokenService;
     }
 
