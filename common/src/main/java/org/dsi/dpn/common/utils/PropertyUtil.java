@@ -621,9 +621,23 @@ public class PropertyUtil {
     }
 
     public static void overrideWithSecrets(Properties properties, SecretProvider provider) {
+        overrideWithSecrets(properties, provider, System.getenv(ENV_VAULT_TRUSTSTORE_PASSWORD));
+    }
+
+    /**
+     * @param truststorePasswordFromEnv value of {@code VAULT_TRUSTSTORE_PASSWORD} (a plain Kubernetes
+     *                                  Secret env var, not a Vault lookup); injected so it can be tested
+     */
+    static void overrideWithSecrets(Properties properties, SecretProvider provider, String truststorePasswordFromEnv) {
 
         if (!provider.isEnabled()) {
             LOGGER.info("Secret provider not configured or parameter missing, skipping secret override");
+            // The truststore password does NOT come from Vault - it is a literal Kubernetes Secret
+            // delivered as an env var - so it must still be applied when no secret provider is
+            // configured. Apps without Vault (e.g. the demo-runner-server) relied on this to open
+            // /tls/truststore.jks; skipping it left the ConfigMap's blank value in place and every
+            // Redis / IDP token fetch failed with "keystore password was incorrect".
+            overrideTruststorePasswords(properties, truststorePasswordFromEnv);
             return;
         }
 
@@ -682,12 +696,18 @@ public class PropertyUtil {
             }
         }
 
-        // redis.truststore.password protects the same /vault/truststore/truststore.jks as
-        // vault.truststore.password (see PropertyUtil.buildSecretProvider), so it must be
-        // resolved from that same literal Kubernetes Secret env var - not from a Vault path
-        // lookup, which was reading a separately-provisioned secret that can hold a different
-        // value and was causing Redis TLS truststore validation failures on connect.
-        String redisTruststorePassword = System.getenv(ENV_VAULT_TRUSTSTORE_PASSWORD);
+        // Applied AFTER the Vault mappings above so it wins over them - see the method's comment.
+        overrideTruststorePasswords(properties, truststorePasswordFromEnv);
+    }
+
+    /**
+     * redis.truststore.password protects the same /vault/truststore/truststore.jks as
+     * vault.truststore.password (see PropertyUtil.buildSecretProvider), so it must be
+     * resolved from that same literal Kubernetes Secret env var - not from a Vault path
+     * lookup, which was reading a separately-provisioned secret that can hold a different
+     * value and was causing Redis TLS truststore validation failures on connect.
+     */
+    static void overrideTruststorePasswords(Properties properties, String redisTruststorePassword) {
         if (redisTruststorePassword != null
                 && !redisTruststorePassword.isBlank()
                 && properties.containsKey(REDIS_TRUSTSTORE_PASSWORD)) {

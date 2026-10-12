@@ -4,6 +4,7 @@ package org.dsi.dpn.demo.server;
 
 import io.swagger.v3.oas.annotations.OpenAPIDefinition;
 import io.swagger.v3.oas.annotations.info.Info;
+import java.util.function.BooleanSupplier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -37,17 +38,35 @@ import org.dsi.dpn.common.utils.PropertyUtil;
                 + "Illustrative only - data is held in memory."))
 public class DemoRunnerServerApplication {
     public static void main(String[] args) {
-        OpenTelemetryConfig.initialize();
+        // Configuration FIRST, telemetry second: the OTLP exporter's background threads read PropertyUtil
+        // (Bearer-token support), so starting OpenTelemetry before PropertyUtil is initialised makes them
+        // fail with "Property Util not properly initialised".
         // Loads FEDERATOR_SERVER_PROPERTIES (server.properties/common-configuration.properties,
         // rendered by demo-runner-server-config.yaml) so redis.idp.* is available for
         // KeycloakSessionGuard/IdpTokenServiceFactory.createRedisIdpTokenService() - used for
         // Redis-gating and, when otel.oauth2.enabled, OTLP export auth (OtelBearerTokenSupport).
         // Logged rather than fatal: unlike the gateway, this app still serves its own API
         // without it - only Redis-gating and OTLP OAuth are affected.
-        if (!PropertyUtil.initializeProperties()) {
+        if (!initialiseConfigurationThenTelemetry(PropertyUtil::initializeProperties, OpenTelemetryConfig::initialize)) {
             log.warn("Failed to initialise PropertyUtil from FEDERATOR_SERVER_PROPERTIES - "
                     + "Redis-gating and OTLP OAuth2 export will not work");
         }
         SpringApplication.run(DemoRunnerServerApplication.class, args);
+    }
+
+    /**
+     * Runs the configuration load, then starts telemetry (always, even if configuration failed).
+     *
+     * @return whether the configuration load succeeded
+     */
+    static boolean initialiseConfigurationThenTelemetry(BooleanSupplier configurationInit, Runnable telemetryInit) {
+        boolean configured = false;
+        try {
+            configured = configurationInit.getAsBoolean();
+        } catch (RuntimeException e) {
+            log.warn("PropertyUtil initialisation threw: {}", e.toString());
+        }
+        telemetryInit.run();
+        return configured;
     }
 }

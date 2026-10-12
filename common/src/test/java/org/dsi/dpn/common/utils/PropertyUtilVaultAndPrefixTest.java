@@ -172,6 +172,66 @@ class PropertyUtilVaultAndPrefixTest {
     }
 
     @Test
+    @DisplayName("with NO secret provider (e.g. demo-runner-server) the truststore password from the "
+            + "VAULT_TRUSTSTORE_PASSWORD env var is STILL applied to both redis truststore properties")
+    void overrideWithSecrets_providerDisabled_stillAppliesTruststorePasswordFromEnv() {
+        Properties properties = new Properties();
+        properties.setProperty("redis.truststore.password", "");          // blank, as the ConfigMap renders it
+        properties.setProperty("redis.idp.truststore.password", "");
+        properties.setProperty("client.p12Password", "original");
+        PropertyUtil.testMappingsOverride = Map.of("client.p12Password", "secret/path#key");
+
+        PropertyUtil.overrideWithSecrets(properties, new FakeSecretProvider(false, Map.of(), false), "tls-store-pw");
+
+        assertThat(properties.getProperty("redis.truststore.password")).isEqualTo("tls-store-pw");
+        assertThat(properties.getProperty("redis.idp.truststore.password")).isEqualTo("tls-store-pw");
+        assertThat(properties.getProperty("client.p12Password"))
+                .as("Vault-sourced properties are still NOT touched without a provider")
+                .isEqualTo("original");
+    }
+
+    @Test
+    @DisplayName("with no provider and no (or blank) VAULT_TRUSTSTORE_PASSWORD nothing is overridden")
+    void overrideWithSecrets_providerDisabled_noEnvPassword_noChange() {
+        Properties properties = new Properties();
+        properties.setProperty("redis.truststore.password", "configured");
+
+        PropertyUtil.overrideWithSecrets(properties, new FakeSecretProvider(false, Map.of(), false), null);
+        PropertyUtil.overrideWithSecrets(properties, new FakeSecretProvider(false, Map.of(), false), "   ");
+
+        assertThat(properties.getProperty("redis.truststore.password")).isEqualTo("configured");
+    }
+
+    @Test
+    @DisplayName("only truststore-password keys that exist in the file are overridden (no new keys invented)")
+    void overrideTruststorePasswords_onlyExistingKeys() {
+        Properties properties = new Properties();
+        properties.setProperty("redis.truststore.password", "");
+
+        PropertyUtil.overrideTruststorePasswords(properties, "tls-store-pw");
+
+        assertThat(properties.getProperty("redis.truststore.password")).isEqualTo("tls-store-pw");
+        assertThat(properties).doesNotContainKey("redis.idp.truststore.password");
+    }
+
+    @Test
+    @DisplayName("with an enabled provider the env truststore password still wins over a Vault mapping "
+            + "(unchanged behaviour)")
+    void overrideWithSecrets_providerEnabled_envTruststorePasswordStillWinsOverVault() {
+        Properties properties = new Properties();
+        properties.setProperty("redis.truststore.password", "original");
+        properties.setProperty("vault.tls.enabled", "false");
+        PropertyUtil.testMappingsOverride = Map.of("redis.truststore.password", "secret/path#pw");
+
+        PropertyUtil.overrideWithSecrets(
+                properties,
+                new FakeSecretProvider(true, Map.of("secret/path#pw", "from-vault"), false),
+                "from-env");
+
+        assertThat(properties.getProperty("redis.truststore.password")).isEqualTo("from-env");
+    }
+
+    @Test
     @DisplayName("overrideWithSecrets() overrides a property whose mapping resolves to a genuine secret")
     void overrideWithSecrets_enabledWithMapping_overridesMatchingProperty() {
         Properties properties = new Properties();
