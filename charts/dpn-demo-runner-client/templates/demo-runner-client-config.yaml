@@ -1,0 +1,90 @@
+# client.properties / common-configuration.properties for the demo runner
+# client Job, rendered from Helm values — mirrors
+# charts/dpn-rest-federator/templates/rest-federator-server-config.yaml.
+#
+# Keystore/truststore passwords are left empty: the Vault secret provider
+# supplies them at startup when vault.tlsEnabled is set.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.job.clientProperties.configMapName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.job.name }}
+data:
+  client.properties: |
+    common.configuration={{ .Values.job.clientProperties.mountPath }}/common-configuration.properties
+
+    federator.consumer.id={{ .Values.job.consumerId }}
+    federator.rest.read.timeout.seconds={{ .Values.job.readTimeoutSeconds }}
+
+    management.node.base.url={{ .Values.job.managementNode.baseUrl }}
+    management.node.request.timeout={{ .Values.job.managementNode.requestTimeout }}
+    management.node.cache.ttl.seconds={{ .Values.job.managementNode.cacheTtlSeconds }}
+
+    redis.host={{ .Values.job.redis.host }}
+    redis.port={{ .Values.job.redis.port }}
+    redis.prefix={{ .Values.job.redis.prefix }}
+    redis.username={{ .Values.job.redis.username }}
+
+  common-configuration.properties: |
+    # Common DPN certificate used to verify Redis's TLS certificate (SAN/hostname
+    # verification - see RedisUtil). Redis TLS is mandatory and unconditional; this was
+    # previously omitted here, which meant the demo client fell back to the JVM default
+    # trust store instead of the common DPN cert used everywhere else in this platform.
+    # Path/password mirror idp.truststore.path below - same Vault-supplied file at runtime.
+    #
+    # redis.tls.enabled lives here, not in client.properties above, because RedisUtil.java
+    # only ever reads it via PropertyUtil.getPropertiesFromFilePath(COMMON_CONFIG_PROPERTIES)
+    # - i.e. from THIS file. Placing it in client.properties (as an earlier version of this
+    # template did) meant the value was silently never read at all. Matches the placement
+    # already used correctly in the server's own equivalent file
+    # (rest-federator-server-config.yaml).
+    redis.tls.enabled={{ .Values.job.redis.tlsEnabled }}
+    redis.truststore.path={{ .Values.job.redis.truststorePath }}
+    redis.truststore.password={{ .Values.job.redis.truststorePassword }}
+
+    idp.client.id={{ .Values.job.idp.clientId }}
+    idp.auth.mode={{ .Values.job.idp.authMode }}
+    idp.mtls.enabled={{ .Values.job.idp.mtlsEnabled }}
+
+    idp.jwks.url={{ .Values.job.idp.jwksUrl }}
+    idp.token.url={{ .Values.job.idp.tokenUrl }}
+
+    idp.jwt.algorithm={{ .Values.job.idp.jwtAlgorithm }}
+    idp.jwt.key.alias={{ .Values.job.idp.jwtKeyAlias }}
+
+    idp.keystore.path={{ .Values.job.idp.keystorePath }}
+    idp.keystore.password=
+    idp.truststore.path={{ .Values.job.idp.truststorePath }}
+    idp.truststore.password=
+
+    # Dedicated Keycloak client for Redis-gating and OTLP export authentication - see
+    # OtelBearerTokenSupport.java and this chart's own redisIdp.* values. token.url/
+    # client.id fall back to the idp.* client above when left blank (same fallback
+    # convention as charts/dpn-rest-federator). redis.idp.client.secret is
+    # deliberately left blank here - supplied via the REDIS_IDP_CLIENT_SECRET env var
+    # / -Dredis.idp.client.secret system property instead (see demo-runner-client-job.yaml) -
+    # never rendered into this ConfigMap as a plain value.
+    redis.idp.token.url={{ .Values.job.redisIdp.tokenUrl | default .Values.job.idp.tokenUrl }}
+    redis.idp.client.id={{ .Values.job.redisIdp.clientId | default .Values.job.idp.clientId }}
+    redis.idp.client.secret=
+    # /vault/truststore/truststore.jks - the common DPN truststore already mounted
+    # unconditionally in this Job (see vault-truststore volume below) - NOT
+    # idp.truststore.path's /tls/truststore.jks, which this Job never mounts. password is
+    # resolved dynamically from VAULT_TRUSTSTORE_PASSWORD at runtime (see
+    # PropertyUtil.REDIS_IDP_TRUSTSTORE_PASSWORD).
+    redis.idp.truststore.path={{ .Values.job.redisIdp.truststorePath }}
+    redis.idp.truststore.password=
+
+    vault.uri={{ .Values.job.vault.uri }}
+    vault.truststore.path={{ .Values.job.vault.truststorePath }}
+    vault.truststore.password={{ .Values.job.vault.truststorePassword }}
+
+    vault.auth.method={{ .Values.job.vault.authMethod }}
+    vault.approle.mount-path={{ .Values.job.vault.appRole.mountPath }}
+    vault.approle.renewal-interval-seconds={{ .Values.job.vault.appRole.renewalIntervalSeconds }}
+
+    vault.tls.enabled={{ .Values.job.vault.tlsEnabled }}
+    vault.tls.secret-base-path={{ .Values.job.vault.tlsBasePath }}
+    vault.tls.keystore-alias={{ .Values.job.vault.tlsKeystoreAlias }}

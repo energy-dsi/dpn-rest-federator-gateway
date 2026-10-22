@@ -1,0 +1,40 @@
+{{- if .Values.demoRunnerServer.service.internalLoadBalancer }}
+# Azure Internal Load Balancer for the demo runner server (example backend).
+#
+# Same shape as the gateway's: a SECOND Service alongside the ClusterIP one,
+# never a replacement. The gateway reaches this backend over the ClusterIP
+# Service's in-cluster DNS name (see restFederatorServer.backend.baseUrl,
+# https://dpn-demo-runner-server-N:8443) so that hop stays inside the cluster
+# and never traverses the load balancer.
+#
+# This Service is therefore only for callers outside the cluster but inside the
+# private network. The azure-load-balancer-internal annotation keeps it private;
+# omitting loadBalancerIP lets Azure allocate from the ILB's subnet.
+#
+# Omitted entirely on non-Azure clusters -- keep service.internalLoadBalancer
+# false for minikube.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.demoRunnerServer.name }}-external
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.demoRunnerServer.name }}
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    {{- with .Values.demoRunnerServer.service.loadBalancerSubnet }}
+    service.beta.kubernetes.io/azure-load-balancer-internal-subnet: {{ . | quote }}
+    {{- end }}
+spec:
+  type: LoadBalancer
+  {{- with .Values.demoRunnerServer.service.loadBalancerIP }}
+  loadBalancerIP: <<your specific value>>
+  {{- end }}
+  selector:
+    app: {{ .Values.demoRunnerServer.name }}
+  ports:
+    - name: https-external
+      port: {{ .Values.demoRunnerServer.service.lbPort | default .Values.demoRunnerServer.service.port }}
+      targetPort: {{ .Values.demoRunnerServer.service.port }}
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,166 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.demoRunnerServer.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.demoRunnerServer.name }}
+spec:
+  replicas: {{ .Values.demoRunnerServer.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.demoRunnerServer.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.demoRunnerServer.name }}
+    spec:
+      containers:
+        - name: {{ .Values.demoRunnerServer.name }}
+          image: "{{ .Values.demoRunnerServer.image.repository }}:{{ .Values.demoRunnerServer.image.tag }}"
+          imagePullPolicy: {{ .Values.demoRunnerServer.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: {{ .Values.demoRunnerServer.service.port }}
+          env:
+            - name: SERVER_PORT
+              value: {{ .Values.demoRunnerServer.service.port | quote }}
+            - name: SERVER_SSL_ENABLED
+              value: {{ .Values.demoRunnerServer.tls.enabled | quote }}
+            # server.properties/common-configuration.properties supplies redis.host/port/
+            # prefix and the redis.idp.* client this app now needs for Redis-gating and
+            # (if otel.oauth2.enabled) authenticating OTLP export - see
+            # demo-runner-server-config.yaml, a new ConfigMap this chart did not render
+            # before.
+            - name: FEDERATOR_SERVER_PROPERTIES
+              value: {{ .Values.demoRunnerServer.serverProperties.mountPath }}/server.properties
+            # Triggers PropertyUtil.overrideWithSecrets()'s existing generic override of
+            # redis.truststore.password AND redis.idp.truststore.password from this one env
+            # var (see PropertyUtil.java) - without it both stay blank exactly as rendered in
+            # the ConfigMap, but /tls/truststore.jks (from the dpn-tls secret) is NOT
+            # password-less, causing a BadPaddingException/"keystore password was incorrect"
+            # on every Redis connection and redis.idp. token fetch. Not actually Vault-related
+            # for this app - named to match the override's existing env-var name, and sourced
+            # from the SAME tls-auth-secret/TRUSTSTORE_PASSWORD key the gateway and
+            # demo-runner-client already use for this exact truststore.jks password.
+            - name: VAULT_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tls-auth-secret
+                  key: TRUSTSTORE_PASSWORD
+            {{- if .Values.demoRunnerServer.redisIdp.clientSecretEnabled }}
+            # Client secret for the redis.idp.* Keycloak client (dpn-service-client).
+            # Deliberately NOT rendered into the ConfigMap as a plain value - injected as a
+            # JVM system property instead, picked up automatically via JAVA_TOOL_OPTIONS.
+            # Sourced from the SAME pre-existing "dpn-keycloak-secrets" Secret (key
+            # KC_SERVICE_CLIENT_SECRET) the sibling certificate-manager repo already reads
+            # for this exact client - not Key Vault CSI, which requires keyvault.enabled=true
+            # and was never actually populated for this purpose.
+            - name: REDIS_IDP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-keycloak-secrets
+                  key: KC_SERVICE_CLIENT_SECRET
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dredis.idp.client.secret=$(REDIS_IDP_CLIENT_SECRET)"
+            {{- end }}
+            # Shared secret the gateway must present. Same Secret the gateway
+            # reads, so both sides stay in step.
+            - name: BACKEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.demoRunnerServer.apiKeySecret.name }}
+                  key: {{ .Values.demoRunnerServer.apiKeySecret.key }}
+            {{- with .Values.demoRunnerServer.tls }}
+            # Inbound HTTPS from the mounted dpn-tls platform secret (keystore.jks
+            # + truststore.jks) — this backend does NOT talk to Vault. The gateway
+            # trusts this cert with the same DPN truststore it uses for Vault HTTPS.
+            - name: TLS_KEYSTORE_PATH
+              value: {{ .keystorePath | quote }}
+            - name: TLS_KEYSTORE_TYPE
+              value: {{ .keystoreType | quote }}
+            - name: TLS_KEYSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .passwordSecret.name }}
+                  key: {{ .passwordSecret.keystoreKey }}
+                  optional: true
+            {{- end }}
+            {{- with .Values.demoRunnerServer.otel }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .protocol | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .insecure | quote }}
+            {{- if .tls.enabled }}
+            # HTTPS export to the OTel Collector - trusts its cert via THIS chart's own
+            # already-mounted dpn-tls secret (see volumeMounts below) - truststore.jks lives
+            # in that same secret alongside the keystore this backend's own inbound
+            # listener uses, just previously unused since that listener only validates
+            # server-side identity, not client certs. No new Secret/volume required. See
+            # OtlpTruststoreSupport.java. Omitted entirely when otel.tls.enabled is false
+            # (default).
+            - name: OTEL_EXPORTER_OTLP_TRUSTSTORE_PATH
+              value: "{{ $.Values.demoRunnerServer.tls.mountPath }}/truststore.jks"
+            - name: OTEL_EXPORTER_OTLP_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  # TRUSTSTORE_PASSWORD, not passwordSecret.keystoreKey - this opens
+                  # truststore.jks, a separately-password-protected store from the
+                  # keystore.jks TLS_KEYSTORE_PASSWORD above, even though both live in the
+                  # same tls-auth-secret.
+                  name: tls-auth-secret
+                  key: TRUSTSTORE_PASSWORD
+                  optional: true
+            {{- end }}
+            # Authenticates OTLP export with an OAuth2 Bearer token - see
+            # OtelBearerTokenSupport.java. Independent of otel.tls.enabled above. Reuses the
+            # SAME dpn-service-client redis.idp.* config rendered into
+            # demo-runner-server-config.yaml (see redisIdp block in values.yaml) - no
+            # separate client, secret, or env var is needed just for this.
+            - name: OTEL_EXPORTER_OTLP_OAUTH_ENABLED
+              value: {{ .oauth2.enabled | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .serviceName | quote }}
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ .tracesSampler | quote }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ .tracesSamplerArg | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: {{ .Values.demoRunnerServer.service.port }}
+              scheme: HTTPS
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: {{ .Values.demoRunnerServer.service.port }}
+              scheme: HTTPS
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          {{- with .Values.demoRunnerServer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # dpn-tls platform secret: keystore.jks (this backend's identity) +
+            # truststore.jks + ca.crt. Presented on the inbound HTTPS listener;
+            # no Vault involved.
+            - name: dpn-tls
+              mountPath: {{ .Values.demoRunnerServer.tls.mountPath }}
+              readOnly: true
+            - name: server-properties
+              mountPath: {{ .Values.demoRunnerServer.serverProperties.mountPath }}
+              readOnly: true
+      volumes:
+        - name: dpn-tls
+          secret:
+            secretName: {{ .Values.demoRunnerServer.tls.secretName }}
+        - name: server-properties
+          configMap:
+            name: {{ .Values.demoRunnerServer.serverProperties.configMapName }}

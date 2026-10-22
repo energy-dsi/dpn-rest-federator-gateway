@@ -1,0 +1,239 @@
+restFederatorServer:
+  name: dpn-rest-federator-server-1
+  replicaCount: 1
+  image:
+    repository: "<<CONTAINER_REGISTRY_URL>>/dpn-rest-federator-server"
+    tag: "latest"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    # No Azure ILB here (minikube/defaults have no cloud load balancer).
+    internalLoadBalancer: false
+    port: 8080
+  # Whether this listener terminates HTTPS at all (the identity cert itself
+  # is always sourced from Vault -- see vault.tlsEnabled below -- regardless
+  # of this toggle).
+  tls:
+    enabled: true
+  # Whether inbound connections must additionally present a client
+  # certificate. Meaningless when tls.enabled is false. Off by default so
+  # the gateway can sit behind App Gateway/other infra that can't present
+  # one (e.g. health probes).
+  mtls:
+    enabled: false
+  # Internal backend the gateway proxies authorized requests to, and the shared
+  # secret it authenticates with. The API key is read from a Kubernetes Secret --
+  # create it out of band, e.g.:
+  #   kubectl create secret generic dpn-backend-api-key \
+  #     --from-literal=apiKey=<value> -n <namespace>
+  backend:
+    baseUrl: http://dpn-demo-runner-server:8080
+    apiKeySecret:
+      name: dpn-backend-api-key
+      key: apiKey
+  # Redis is deployed by the separate dpn-redis chart; this points the
+  # gateway at that release's Service.
+  #
+  # truststorePath/truststorePassword mirror dpn-federator-gateway's Redis TLS model (see
+  # RedisUtil) — Redis-native username/password (ACL) authentication is no longer used;
+  # access control is enforced via the dedicated redisIdp Keycloak client below and
+  # keycloakAuthEnabled, gated at the application layer (see KeycloakSessionGuard).
+  #
+  # dpn-redis is TLS-only, single port (--port 0 disables plaintext entirely) -
+  # matching the gRPC federator's own local dev design exactly (see
+  # docker-grpc-resources/docker-compose-shared.yml in that project). port below
+  # is the ONLY port dpn-redis exposes, and it always speaks TLS - there is no
+  # separate plaintext port to confuse this with. tlsEnabled below is rendered
+  # only for backward compatibility with the ConfigMap's existing schema -
+  # RedisUtil ignores it (Redis TLS is unconditional and can no longer be
+  # turned off from here).
+  redis:
+    host: dpn-rest-federator-redis
+    port: 6379
+    tlsEnabled: true
+    # Reuses the already-mounted vault-truststore volume (cert-manager-truststore
+    # Secret) rather than an unmounted /tls path - no chart in this repo ever
+    # mounts anything at /tls for this component. Redis's cert is derived from
+    # the same common DPN certificate this truststore already trusts, and its
+    # password is already resolved dynamically from Vault via
+    # VAULT_TRUSTSTORE_PASSWORD_PATH below (see PropertyUtil.VaultMappings /
+    # RedisUtil.REDIS_TRUSTSTORE_PASSWORD).
+    truststorePath: /vault/truststore/truststore.jks
+    truststorePassword: ""
+    prefix: federator-server
+  # Master switch for Redis Keycloak gating - see KeycloakAuthConfig's Javadoc. true (default)
+  # in every real environment; set to false only for local development testing.
+  keycloakAuthEnabled: true
+  # Dedicated Keycloak client used to gate Redis access AND (when otel.oauth2.enabled) to
+  # authenticate OTLP export - "dpn-service-client", the SAME client the sibling
+  # certificate-manager repo already uses for its own OTLP OAuth (see that repo's
+  # OtelOAuth2TokenServiceImpl/PrivateJwtTokenServiceImpl Javadoc). Deliberately NOT the
+  # idp.* client below - that one is provisioned in Keycloak for private_key_jwt/mTLS only
+  # and has no client_secret credential, so it cannot serve this client_credentials flow.
+  # clientSecret is deliberately not set here - sourced from the pre-existing
+  # "dpn-keycloak-secrets" Secret (see clientSecretEnabled below), never as a literal value.
+  #
+  # tokenUrl/clientId are intentionally left blank here - set explicitly per-environment
+  # (same dpn-keycloak/dpn-realm token endpoint in every environment observed in the
+  # sibling certificate-manager repo's own values-<env>.yaml files).
+  redisIdp:
+    tokenUrl: ""
+    clientId: "dpn-service-client"
+    # /vault/truststore/truststore.jks - the SAME common DPN truststore already mounted
+    # unconditionally in this deployment for Vault/Redis/OTLP - trusts dpn-keycloak's
+    # certificate (verified directly: real TLS handshake, not skip-verify). NOT
+    # idp.truststore.path's default of /tls/truststore.jks, which this chart never mounts -
+    # falling back to it here would fail every token fetch with a file-not-found error that
+    # retries forever without ever self-healing.
+    truststorePath: /vault/truststore/truststore.jks
+    # Resolved dynamically from VAULT_TRUSTSTORE_PASSWORD at runtime (see
+    # PropertyUtil.REDIS_IDP_TRUSTSTORE_PASSWORD) - same mechanism as
+    # redis.truststore.password, same underlying Secret/password as vault.truststore.password.
+    truststorePassword: ""
+    # Controls whether rest-federator-server-deployment.yaml injects
+    # REDIS_IDP_CLIENT_SECRET/-Dredis.idp.client.secret at all. Default true: sources the
+    # secret from the plain, pre-existing "dpn-keycloak-secrets" Secret (key
+    # KC_SERVICE_CLIENT_SECRET) - not Key Vault CSI, which requires keyvault.enabled=true
+    # and was never actually populated for this purpose. Set false only for local/offline
+    # development where that Secret doesn't exist and Redis-gating/OTLP OAuth are both
+    # unused.
+    clientSecretEnabled: true
+  producerId: ""
+  # Management Node serving this producer's REST product configuration.
+  managementNode:
+    baseUrl: https://localhost:8090
+    requestTimeout: 5
+    cacheTtlSeconds: 60
+  # Identity Provider. Keystore/truststore passwords are not set here — the
+  # Vault secret provider supplies them at startup.
+  idp:
+    clientId: ""
+    authMode: private_key_jwt
+    mtlsEnabled: true
+    jwksUrl: ""
+    tokenUrl: ""
+    jwtAlgorithm: RS256
+    jwtKeyAlias: federator
+    keystorePath: /tls/keystore.p12
+    truststorePath: /tls/truststore.jks
+  # Properties file naming the shared common-configuration file. Mount it via
+  # a ConfigMap/Secret at this path.
+  propertiesPath: /config/server.properties
+  # Vault. authMethod: token | approle.
+  #   token   — uses VAULT_TOKEN from the secret below.
+  #   approle — uses roleId plus a secret-id read from its own Secret, and
+  #             renews the lease (see vault.approle.* in common-configuration).
+  # tlsEnabled reads the TLS material straight from Vault, which is what
+  # removes the need for a shared fileshare to distribute certificates.
+  vault:
+    uri: ""
+    truststorePath: /vault/truststore/truststore.jks
+    truststorePassword: ""
+    authMethod: token
+    tlsEnabled: true
+    tlsBasePath: node-net/client
+    tlsKeystoreAlias: federator
+    keystorePasswordPath: node-net/client/keystore-password#password
+    truststorePasswordPath: node-net/client/truststore-password#password
+    # VAULT_TRUSTSTORE_PASSWORD (tls-auth-secret), VAULT_TOKEN
+    # (certificate-manager-secrets) and the vault-truststore volume
+    # (cert-manager-truststore) are sourced from fixed Secret names directly
+    # in the Deployment template -- not configurable here, matching the
+    # federator gateway's own convention.
+    appRole:
+      roleId: ""
+      mountPath: approle
+      renewalIntervalSeconds: 3600
+      # secretId is only used when useSecretIdRef is false (NOT recommended).
+      secretId: ""
+      # When true, VAULT_SECRET_ID is sourced from a Kubernetes Secret via
+      # secretKeyRef instead of a plaintext value. Set true per-env.
+      useSecretIdRef: false
+      secretIdSecretName: certificate-manager-secrets
+      secretIdSecretKey: VAULT_APPROLE_SECRET_ID
+  otel:
+    endpoint: ""
+    protocol: "grpc"
+    insecure: "true"
+    serviceName: "rest-federator-server"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+    # HTTPS export to the OTel Collector, matching the sibling gRPC federator's own pattern
+    # (dpn-federator-gateway's otel.tls.enabled). false by default - zero change for any
+    # environment not opting in, and harmless when endpoint above is blank/unset either way.
+    # When true, the deployment template adds OTEL_EXPORTER_OTLP_TRUSTSTORE_PATH/_PASSWORD,
+    # reusing the SAME common-DPN-certificate truststore Vault's own TLS connection already
+    # uses (vault.truststorePath below, the cert-manager-truststore Secret already mounted at
+    # /vault/truststore unconditionally) - no new Secret or volume is required. Setting this
+    # true does NOT itself change the endpoint/protocol/insecure values above - set those to a
+    # https:// endpoint and insecure: "false" yourself once the collector's OTLP receiver
+    # actually terminates TLS.
+    tls:
+      enabled: false
+    # Authenticates OTLP export to the Collector with an OAuth2 Bearer token (see
+    # OtelBearerTokenSupport), reusing the SAME redisIdp Keycloak client above (dpn-service-client)
+    # - no separate client/secret is provisioned for this. false by default - zero change for
+    # any environment not opting in.
+    oauth2:
+      enabled: false
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+# Azure Key Vault via the secrets-store CSI driver.
+#
+# Disabled by default: it needs real managed-identity, vault and tenant IDs,
+# and the cluster must have the secrets-store CSI driver installed.
+#
+# `objects` declares what to pull. Unlike the federator gateway — which syncs
+# Kafka and blob-storage credentials the REST stack has no use for — only the
+# backend API key is listed here. Add entries as needed.
+#
+# To have the gateway read the API key from the synced Secret, set
+# restFederatorServer.backend.apiKeySecret.name to the secretName below.
+keyvault:
+  enabled: false
+  clientID: ""
+  name: ""
+  tenantId: ""
+  # Kubernetes Secret the CSI driver writes the Key Vault values into.
+  secretName: dpn-rest-federator-server-secrets
+  mountPath: /mnt/secrets
+  objects:
+    # objectName is the Key Vault secret name; key is the Kubernetes Secret key.
+    - objectName: BACKEND-API-KEY
+      key: BACKEND_API_KEY
+    # Client secret for the dedicated Redis-gating Keycloak client (redis.idp.* -
+    # see KeycloakSessionGuard / RedisUtil.getKeycloakGatedInstance()). Provision the
+    # actual value in Azure Key Vault under this object name before enabling this.
+    - objectName: REDIS-IDP-CLIENT-SECRET
+      key: REDIS_IDP_CLIENT_SECRET
+
+# ------- HPA Config ------------
+hpa:
+  enabled: true
+
+  minReplicas: 1
+  maxReplicas: 3
+
+  scaleUp:
+    cpuUtilization: 80
+    memoryUtilization: 80
+
+  scaleUpBehavior:
+    stabilizationWindowSeconds: 60
+    policies:
+      - type: Pods
+        value: 1
+        periodSeconds: 60
+
+  scaleDown:
+    stabilizationWindowSeconds: 300
+    policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60

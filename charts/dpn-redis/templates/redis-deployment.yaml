@@ -1,0 +1,138 @@
+{{- if .Values.redisCache.enabled }}
+# Redis cache owned by this chart.
+#
+# Single replica with no PersistentVolume: this is a cache, so its contents are
+# rebuildable and losing them on a restart is acceptable. Add a PVC and a
+# StatefulSet if durable storage is ever required.
+#
+# TLS-only (--port 0 disables plaintext entirely), matching the sibling gRPC
+# federator's own dpn-redis deployment exactly - no separate plain port, no
+# toggle. RedisUtil.java (this project's client) always connects over TLS
+# unconditionally, so there is no consumer left that would ever need a plain
+# listener.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.redisCache.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.redisCache.name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ .Values.redisCache.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.redisCache.name }}
+    spec:
+      # dpn-tls's keystore.jks (alias "federator") carries the same common DPN identity
+      # cert used everywhere else in this platform (the gateway's own HTTPS listener, the
+      # IDP mTLS client, etc.) - see VaultKeystoreProvider. redis-server needs PEM
+      # cert/key, not JKS, so this initContainer extracts them once into a shared emptyDir
+      # before the redis container starts. Identical to the sibling gRPC federator's own
+      # dpn-redis deployment.
+      #
+      # Same image as the redis container itself (Alpine-based) rather than a
+      # separate one: redis:7.4-alpine doesn't ship with openssl, but it's a
+      # single `apk add` away, which avoids depending on an unrelated app
+      # image/tag (this previously pointed at dpn-rest-federator-server,
+      # tracking its own separate, environment-specific ACR tag for no reason
+      # other than that image happening to have openssl installed).
+      #
+      # --tls-auth-clients no (below, in the redis container's command): Redis's TLS
+      # listener only needs a server cert here - client identity/authorization for Redis
+      # is enforced at the application layer via Keycloak (KeycloakSessionGuard, see
+      # RedisUtil.java), not via a client TLS certificate. dpn-tls's keystore.jks only
+      # carries serverAuth EKU anyway, so it could never be presented as a valid client
+      # cert for mutual TLS.
+      initContainers:
+        - name: redis-tls-cert-init
+          image: "{{ .Values.redisCache.image.repository }}:{{ .Values.redisCache.image.tag }}"
+          imagePullPolicy: {{ .Values.redisCache.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              apk add --no-cache openssl
+              openssl pkcs12 -in /etc/dpn-tls/keystore.jks -passin pass:"$KEYSTORE_PASSWORD" \
+                -nokeys -clcerts -out /tls/redis.crt
+              openssl pkcs12 -in /etc/dpn-tls/keystore.jks -passin pass:"$KEYSTORE_PASSWORD" \
+                -nocerts -nodes -out /tls/redis.key
+              cp /etc/dpn-tls/ca.crt /tls/ca.crt
+              # The redis container runs as a different (non-root) user than this
+              # initContainer, so the extracted files must be world-readable for it to
+              # load them.
+              chmod 644 /tls/redis.crt /tls/redis.key /tls/ca.crt
+          env:
+            # tls-auth-secret, key KEYSTORE_PASSWORD: matches the sibling gRPC
+            # federator's own initContainer exactly - a SEPARATE secret from
+            # dpn-tls itself, holding just the keystore's password.
+            - name: KEYSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redisCache.tls.secretPasswordName }}
+                  key: {{ .Values.redisCache.tls.secretPasswordKey }}
+          volumeMounts:
+            - name: dpn-tls
+              mountPath: /etc/dpn-tls
+              readOnly: true
+            - name: redis-tls-pem
+              mountPath: /tls
+      containers:
+        - name: redis
+          image: "{{ .Values.redisCache.image.repository }}:{{ .Values.redisCache.image.tag }}"
+          imagePullPolicy: {{ .Values.redisCache.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          # TLS-only: --port 0 disables plaintext entirely, matching the sibling gRPC
+          # federator's own dpn-redis deployment exactly. No separate plain port exists.
+          command:
+            - redis-server
+            - --port
+            - "0"
+            - --tls-port
+            - {{ .Values.redisCache.service.port | quote }}
+            - --tls-cert-file
+            - /tls/redis.crt
+            - --tls-key-file
+            - /tls/redis.key
+            - --tls-ca-cert-file
+            - /tls/ca.crt
+            - --tls-auth-clients
+            - "no"
+          ports:
+            - containerPort: {{ .Values.redisCache.service.port }}
+          # TCP-only checks: the bundled redis-cli in this image may not be built with
+          # TLS support ("Server closed the connection" on redis-cli --tls ... ping even
+          # though the server itself is healthy - confirmed in the sibling gRPC
+          # federator's own testing), so probing the TLS port's TCP handshake avoids
+          # depending on redis-cli's TLS capability entirely.
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.redisCache.service.port }}
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.redisCache.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          {{- with .Values.redisCache.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: redis-tls-pem
+              mountPath: /tls
+              readOnly: true
+      volumes:
+        - name: dpn-tls
+          secret:
+            secretName: {{ .Values.redisCache.tls.secretName }}
+        - name: redis-tls-pem
+          emptyDir: {}
+{{- end }}

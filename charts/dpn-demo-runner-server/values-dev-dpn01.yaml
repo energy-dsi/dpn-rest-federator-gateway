@@ -1,0 +1,51 @@
+demoRunnerServer:
+  # Full in-cluster FQDN of this cluster's Redis Service (same one the demo client uses). The chart
+  # default 'dpn-rest-federator-redis' does not exist, and dpn-redis's wildcard TLS cert SAN only
+  # matches the full hostname under strict hostname verification.
+  redis:
+    host: dpn-rest-federator-redis-1.ns-dpn-01.svc.cluster.local
+  name: dpn-demo-runner-server-1
+  replicaCount: 1
+  image:
+    repository: <<CONTAINER_REGISTRY_URL>>/dpn-demo-runner-server
+    tag: "1.0.0"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    # Azure ILB: exposes this service privately inside the VNet.
+    # loadBalancerIP omitted on purpose - Azure allocates from the ILB subnet.
+    internalLoadBalancer: true
+    port: 8443
+    loadBalancerIP: <<your specific value>>
+  # Same Secret the REST Federator gateway reads, so both ends of the
+  # gateway -> backend hop share one value.
+  apiKeySecret:
+    name: dpn-backend-api-key
+    key: apiKey
+  # dpn-service-client's dpn-keycloak/dpn-realm token endpoint - see values.yaml's
+  # redisIdp comment.
+  redisIdp:
+    tokenUrl: "https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/dpn-realm/protocol/openid-connect/token"
+  # otel.tls.enabled now true: this environment's collector endpoint has moved to the
+  # OTLP HTTP receiver on :4318/https, matching the sibling gRPC federator project.
+  # CONFIRM with the ns-dpn-health-01 collector owner that this receiver genuinely
+  # terminates TLS on :4318 before relying on this in a real test - if it does not yet,
+  # revert protocol/insecure/endpoint below and otel.tls.enabled to their prior values.
+  otel:
+    endpoint: "https://dpn-otel-collector.ns-dpn-health-01.svc.cluster.local:4318"
+    protocol: "http/protobuf"
+    insecure: "false"
+    serviceName: "demo-runner-server"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+    tls:
+      enabled: true
+    oauth2:
+      enabled: true
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

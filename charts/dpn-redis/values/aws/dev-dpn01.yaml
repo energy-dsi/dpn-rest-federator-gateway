@@ -1,0 +1,34 @@
+# =============================================================================
+# Redis (rest-federator-gateway) — AWS dev-dpn01 values
+# EKS     : <<your specific value>>
+# Account : <<your specific value>>
+# Region  : eu-west-2
+#
+# This chart has zero cloud-specific logic and no PVC (confirmed: no template
+# in this chart branches on cloudProvider or references keyvault/CSI/LB
+# annotations). cloudProvider is set below for consistency/future-proofing
+# only -- no template currently branches on it. Mirrored from
+# aws/test-dpn01.yaml (confirmed-working); azure/dev-dpn01.yaml was checked
+# too and has no test-vs-dev differences (same resources/tag), so none were
+# invented here. Otherwise identical to azure/dev-dpn01.yaml.
+# =============================================================================
+
+cloudProvider: aws
+
+redisCache:
+  enabled: true
+  name: dpn-rest-federator-redis-1
+  image:
+    repository: redis
+    tag: "7.4-alpine"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 6379
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

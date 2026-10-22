@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.otelCollector.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.otelCollector.name }}
+spec:
+  replicas: {{ .Values.otelCollector.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.otelCollector.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.otelCollector.name }}
+    spec:
+      {{- if .Values.otelCollector.tls.enabled }}
+      # Extracts PEM cert/key from the shared dpn-tls keystore.jks into a plain emptyDir
+      # before the collector starts - the OTLP HTTP receiver's tls.cert_file/key_file need
+      # PEM, not JKS. Identical pattern to dpn-redis's own "redis-tls-cert-init"; see that
+      # chart's redis-deployment.yaml for the original this was modelled on.
+      initContainers:
+        - name: otel-tls-cert-init
+          image: alpine:3.20
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              apk add --no-cache openssl
+              openssl pkcs12 -in /etc/dpn-tls/keystore.jks -passin pass:"$KEYSTORE_PASSWORD" \
+                -nokeys -clcerts -out /tls/tls.crt
+              openssl pkcs12 -in /etc/dpn-tls/keystore.jks -passin pass:"$KEYSTORE_PASSWORD" \
+                -nocerts -nodes -out /tls/tls.key
+              cp /etc/dpn-tls/ca.crt /tls/ca.crt
+              # This initContainer's base image (alpine) may run as a different user than
+              # the collector container - matching Redis's own initContainer, the extracted
+              # files are made world-readable so that's never a problem regardless of which
+              # user the otel/opentelemetry-collector-contrib image itself runs as.
+              chmod 644 /tls/tls.crt /tls/tls.key /tls/ca.crt
+          env:
+            - name: KEYSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.otelCollector.tls.secretPasswordName }}
+                  key: {{ .Values.otelCollector.tls.secretPasswordKey }}
+          volumeMounts:
+            - name: dpn-tls
+              mountPath: /etc/dpn-tls
+              readOnly: true
+            - name: otel-tls-pem
+              mountPath: /tls
+      {{- end }}
+      containers:
+        - name: otel-collector
+          image: "{{ .Values.otelCollector.image.repository }}:{{ .Values.otelCollector.image.tag }}"
+          imagePullPolicy: {{ .Values.otelCollector.image.pullPolicy }}
+          args:
+            - "--config=/etc/otel/otel-collector-config.yaml"
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: {{ .Values.otelCollector.service.otlpGrpcPort }}
+            - containerPort: {{ .Values.otelCollector.service.otlpHttpPort }}
+          {{- with .Values.otelCollector.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/otel
+              readOnly: true
+            {{- if .Values.otelCollector.tls.enabled }}
+            - name: otel-tls-pem
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Values.otelCollector.name }}-config
+        {{- if .Values.otelCollector.tls.enabled }}
+        - name: dpn-tls
+          secret:
+            secretName: {{ .Values.otelCollector.tls.secretName }}
+        - name: otel-tls-pem
+          emptyDir: {}
+        {{- end }}

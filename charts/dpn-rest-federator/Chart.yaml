@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dpn-rest-federator
+description: Helm chart for the REST Federator server (dpn-rest-federator-gateway)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

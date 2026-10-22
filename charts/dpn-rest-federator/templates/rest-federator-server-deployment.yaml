@@ -1,0 +1,212 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.restFederatorServer.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.restFederatorServer.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Values.restFederatorServer.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.restFederatorServer.name }}
+    spec:
+      containers:
+        - name: {{ .Values.restFederatorServer.name }}
+          image: "{{ .Values.restFederatorServer.image.repository }}:{{ .Values.restFederatorServer.image.tag }}"
+          imagePullPolicy: {{ .Values.restFederatorServer.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: {{ .Values.restFederatorServer.service.port }}
+          env:
+            # Properties file naming the shared common-configuration file.
+            - name: FEDERATOR_SERVER_PROPERTIES
+              value: {{ .Values.restFederatorServer.propertiesPath | quote }}
+            # Whether this listener terminates HTTPS at all.
+            - name: SERVER_SSL_ENABLED
+              value: {{ .Values.restFederatorServer.tls.enabled | quote }}
+            # Whether inbound connections must additionally present a client
+            # certificate. Meaningless when SERVER_SSL_ENABLED is false.
+            - name: SERVER_SSL_CLIENT_AUTH
+              value: {{ .Values.restFederatorServer.mtls.enabled | ternary "need" "none" | quote }}
+            # Managed identity used by the secrets-store CSI driver. Set
+            # unconditionally, matching the federator gateway's own template.
+            - name: AZURE_CLIENT_ID
+              value: {{ .Values.keyvault.clientID | quote }}
+            # Internal backend the gateway proxies authorized requests to.
+            - name: BACKEND_BASE_URL
+              value: {{ .Values.restFederatorServer.backend.baseUrl | quote }}
+            # Shared secret for the gateway -> backend hop. Held in a Secret;
+            # never set as a plain value here.
+            - name: BACKEND_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.restFederatorServer.backend.apiKeySecret.name }}
+                  key: {{ .Values.restFederatorServer.backend.apiKeySecret.key }}
+            {{- if .Values.restFederatorServer.redisIdp.clientSecretEnabled }}
+            # Client secret for the dedicated Redis-gating Keycloak client (redis.idp.* - see
+            # KeycloakSessionGuard.java, IdpTokenServiceFactory.createRedisIdpTokenService()).
+            # Also the SAME client OtelBearerTokenSupport.java reuses to authenticate OTLP
+            # export (OTEL_EXPORTER_OTLP_OAUTH_ENABLED below) - no separate secret is
+            # provisioned for that. Deliberately NOT rendered into the ConfigMap
+            # (rest-federator-server-config.yaml) as a plain value - ConfigMaps are not
+            # encrypted, unlike Secrets. Injected as a JVM system property instead:
+            # JAVA_TOOL_OPTIONS is picked up automatically by the JVM at startup (the JVM
+            # itself prints "Picked up JAVA_TOOL_OPTIONS: ..." to stderr confirming this), so
+            # no change to this image's entrypoint command is needed.
+            #
+            # Sourced from the SAME pre-existing "dpn-keycloak-secrets" Secret
+            # (key KC_SERVICE_CLIENT_SECRET) the sibling certificate-manager repo already
+            # reads for this exact client (dpn-service-client) - not the Key Vault CSI driver,
+            # which requires keyvault.enabled=true and was never actually populated for this
+            # purpose in any environment. Gated behind redisIdp.clientSecretEnabled (default
+            # true) rather than marked optional on the secretKeyRef itself: if the Secret/key
+            # were genuinely absent, Kubernetes would leave "$(REDIS_IDP_CLIENT_SECRET)" as a
+            # literal, UNEXPANDED string in JAVA_TOOL_OPTIONS rather than an empty value -
+            # IdpTokenServiceClientSecretImpl would then treat that literal text as a real
+            # (garbage) secret value, which is a WORSE failure than not setting -D at all.
+            - name: REDIS_IDP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-keycloak-secrets
+                  key: KC_SERVICE_CLIENT_SECRET
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dredis.idp.client.secret=$(REDIS_IDP_CLIENT_SECRET)"
+            {{- end }}
+            {{- with .Values.restFederatorServer.redis }}
+            # Redis is deployed by the separate dpn-redis chart; these point the
+            # gateway at that release's in-cluster Service.
+            - name: REDIS_HOST
+              value: {{ .host | quote }}
+            - name: REDIS_PORT
+              value: {{ .port | quote }}
+            {{- end }}
+            {{- with .Values.restFederatorServer.vault }}
+            # Vault. With tlsEnabled the TLS material is read straight from
+            # Vault, so no shared file mount is needed to distribute
+            # certificates. Mirrors the federator gateway's own wiring.
+            # Secret name/keys here match the federator gateway's own
+            # convention exactly and are not env-configurable there either.
+            - name: VAULT_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tls-auth-secret
+                  key: TRUSTSTORE_PASSWORD
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: certificate-manager-secrets
+                  key: VAULT_TOKEN
+                  # Absent in AppRole mode; a required key would crash the pod.
+                  optional: true
+            {{- if eq (lower .authMethod) "approle" }}
+            - name: VAULT_ROLE_ID
+              value: {{ .appRole.roleId | quote }}
+            - name: VAULT_SECRET_ID
+            {{- if .appRole.useSecretIdRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .appRole.secretIdSecretName }}
+                  key: {{ .appRole.secretIdSecretKey }}
+            {{- else }}
+              value: {{ .appRole.secretId | quote }}
+            {{- end }}
+            {{- end }}
+            - name: VAULT_KEYSTORE_PASSWORD_PATH
+              value: {{ .keystorePasswordPath | quote }}
+            - name: VAULT_TRUSTSTORE_PASSWORD_PATH
+              value: {{ .truststorePasswordPath | quote }}
+            {{- end }}
+            {{- with .Values.restFederatorServer.otel }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .protocol | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .insecure | quote }}
+            # Authenticates OTLP export with an OAuth2 Bearer token - see
+            # OtelBearerTokenSupport.java. Independent of tls.enabled below: this attaches a
+            # header, tls.enabled/truststore trusts the Collector's certificate; either, both,
+            # or neither can be true. false by default - zero change for any environment not
+            # opting in. Reuses the same redisIdp Keycloak client/secret already configured
+            # above (REDIS_IDP_CLIENT_SECRET) - no separate client, secret, or env var is
+            # needed just for this.
+            - name: OTEL_EXPORTER_OTLP_OAUTH_ENABLED
+              value: {{ .oauth2.enabled | quote }}
+            {{- if .tls.enabled }}
+            # HTTPS export to the OTel Collector - trusts its cert via the SAME common-DPN
+            # truststore Vault's own TLS connection already uses (no new Secret/volume; the
+            # vault-truststore volume below is already mounted at /vault/truststore
+            # unconditionally). See OtlpTruststoreSupport.java. Omitted entirely when
+            # otel.tls.enabled is false (default) - matches this project's existing
+            # behaviour exactly.
+            - name: OTEL_EXPORTER_OTLP_TRUSTSTORE_PATH
+              value: {{ $.Values.restFederatorServer.vault.truststorePath | quote }}
+            - name: OTEL_EXPORTER_OTLP_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  # tls-auth-secret/TRUSTSTORE_PASSWORD - confirmed by direct comparison against
+                  # the sibling gRPC Federator's own actual, current deployment code (not its
+                  # design document, which described a different secret - certificate-manager-
+                  # secrets/VAULT_SSL_TRUST_STORE_PASSWORD - that the implementation diverged
+                  # from). This is the SAME secret/key already used for Redis TLS's own
+                  # initContainer password (see charts/dpn-redis/values.yaml
+                  # secretPasswordName), matching the gRPC Federator's actual pattern of reusing
+                  # one password across both uses rather than two separate secrets.
+                  name: tls-auth-secret
+                  key: TRUSTSTORE_PASSWORD
+            {{- end }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .serviceName | quote }}
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ .tracesSampler | quote }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ .tracesSamplerArg | quote }}
+            # Export ONE log record per OTLP request. The health dashboard's Data Prepper pipeline
+            # indexes only the first record of each batch (logRecords/0), so with the default batching
+            # (up to 512 records) the periodic heartbeat and most activity logs are silently dropped and
+            # the component is missing from Component Health State. Set otel.logExportBatchSize to a
+            # larger value once the pipeline indexes every record.
+            - name: OTEL_BLRP_MAX_EXPORT_BATCH_SIZE
+              value: {{ .logExportBatchSize | default 1 | quote }}
+            {{- end }}
+          {{- with .Values.restFederatorServer.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            # server.properties and common-configuration.properties, rendered
+            # from Helm values by rest-federator-server-config.yaml.
+            - name: config
+              mountPath: /config
+              readOnly: true
+            # Truststore used to reach Vault itself. Secret name matches the
+            # federator gateway's own convention exactly (always mounted).
+            - name: vault-truststore
+              mountPath: /vault/truststore
+              readOnly: true
+            {{- if .Values.keyvault.enabled }}
+            # Mounting the CSI volume is what triggers the driver to sync the
+            # Key Vault secrets into the Kubernetes Secret.
+            - name: server-secrets-store
+              mountPath: {{ .Values.keyvault.mountPath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ .Values.restFederatorServer.name }}-config
+        - name: vault-truststore
+          secret:
+            secretName: cert-manager-truststore
+        {{- if .Values.keyvault.enabled }}
+        - name: server-secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ .Values.restFederatorServer.name }}-kv-secrets
+        {{- end }}

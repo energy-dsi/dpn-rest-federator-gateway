@@ -1,0 +1,17 @@
+{{- if .Values.redisCache.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.redisCache.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.redisCache.name }}
+spec:
+  type: {{ .Values.redisCache.service.type }}
+  selector:
+    app: {{ .Values.redisCache.name }}
+  ports:
+    - port: {{ .Values.redisCache.service.port }}
+      targetPort: {{ .Values.redisCache.service.port }}
+      protocol: TCP
+{{- end }}

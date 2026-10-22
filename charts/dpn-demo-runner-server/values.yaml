@@ -1,0 +1,120 @@
+demoRunnerServer:
+  name: dpn-demo-runner-server
+  replicaCount: 1
+  image:
+    repository: <<CONTAINER_REGISTRY_URL>>/dpn-demo-runner-server
+    tag: "latest"
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    # No Azure ILB here (minikube/defaults have no cloud load balancer).
+    internalLoadBalancer: false
+    port: 8443
+  # Same Secret the REST Federator gateway reads, so both ends of the
+  # gateway -> backend hop share one value.
+  apiKeySecret:
+    name: dpn-backend-api-key
+    key: apiKey
+  # Inbound HTTPS (server-only TLS). This backend terminates HTTPS with the
+  # keystore.jks from the mounted dpn-tls platform secret and does NOT talk to
+  # Vault. The gateway trusts this certificate with the same DPN truststore it
+  # uses for Vault HTTPS calls; the shared API key authenticates the hop (no
+  # client certificate required).
+  tls:
+    enabled: true
+    # dpn-tls platform secret. Server-only TLS uses just the keystore (this
+    # backend's identity); truststore.jks/ca.crt in the secret are not needed
+    # here since the listener never validates a client certificate.
+    secretName: dpn-tls
+    mountPath: /tls
+    keystorePath: /tls/keystore.jks
+    keystoreType: JKS
+    # Keystore password, read from a Secret (optional: a password-less store also
+    # loads). Sourced from the shared tls-auth-secret (created once by
+    # dpn-tls-cd) instead of an independent copy.
+    passwordSecret:
+      name: tls-auth-secret
+      keystoreKey: KEYSTORE_PASSWORD
+  otel:
+    endpoint: ""
+    protocol: "grpc"
+    insecure: "true"
+    serviceName: "demo-runner-server"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+    # HTTPS export to the OTel Collector - see the matching otel.tls.enabled in
+    # charts/dpn-rest-federator/values.yaml and charts/dpn-demo-runner-client/values.yaml.
+    # False by default - zero change for any environment not opting in. This component has
+    # no Vault involvement of its own (see tls.* above), but the SAME dpn-tls platform
+    # secret it already mounts for its own inbound HTTPS listener also carries
+    # truststore.jks/ca.crt - unused by that listener (server-only TLS, no client cert
+    # validation) but already present on disk. When true, the deployment template points
+    # OTEL_EXPORTER_OTLP_TRUSTSTORE_PATH at that same already-mounted file instead of
+    # requiring a new Secret/volume just for this.
+    tls:
+      enabled: false
+    # Authenticates OTLP export to the Collector with an OAuth2 Bearer token (see
+    # OtelBearerTokenSupport - this app calls the SAME OpenTelemetryConfig.initialize() the
+    # REST Federator gateway does, so it already supports this env var). Independent of
+    # tls.enabled above. false by default - zero change for any environment not opting in.
+    #
+    # OtelBearerTokenSupport unconditionally authenticates as the redis.idp.* client
+    # (dpn-service-client) - the same one the REST Federator gateway uses for Redis-gating.
+    # serverProperties/redis/redisIdp below now supply this app with the same
+    # FEDERATOR_SERVER_PROPERTIES-based config mechanism the gateway and demo client already
+    # have (see demo-runner-server-config.yaml, a new ConfigMap this chart did not render
+    # before) - this app genuinely had no such config path until now, so this and its
+    # Redis-gating are both new, unexercised-in-production territory the first time this
+    # flag is turned on anywhere.
+    oauth2:
+      enabled: false
+  # Redis - IDP access-token cache (Redis-gating; see KeycloakSessionGuard/RedisUtil) and,
+  # if otel.oauth2.enabled above, the token OTLP export authenticates with too. Same dpn-redis
+  # instance the gateway and demo client both already use.
+  redis:
+    host: dpn-rest-federator-redis
+    port: 6379
+    # dpn-redis is TLS-only (--port 0 disables plaintext) - see the matching comment in
+    # charts/dpn-demo-runner-client/values.yaml. Reuses the truststore.jks already present
+    # in the dpn-tls secret this chart mounts for its own inbound HTTPS listener (see tls.*
+    # above, tls.mountPath) - no new Secret/volume needed. NOTE: kept as a literal path
+    # here (values.yaml is plain YAML, not a Helm template) - if tls.mountPath is ever
+    # changed from "/tls", update this to match.
+    truststorePath: /tls/truststore.jks
+    truststorePassword: ""
+    prefix: federator-demo-server
+  # Dedicated Keycloak client for Redis-gating and OTLP export auth - see
+  # charts/dpn-rest-federator's own identical redisIdp block and OtelBearerTokenSupport.java.
+  # tokenUrl/clientId left blank by default; this app has no idp.* client of its own to fall
+  # back to (unlike demo-runner-client), so these MUST be set per-environment before
+  # Redis-gating or otel.oauth2.enabled can work at all.
+  redisIdp:
+    tokenUrl: ""
+    clientId: dpn-service-client
+    # This app has no idp.* (private_key_jwt/mTLS) client of its own, so unlike the
+    # gateway's redisIdp.truststorePath there is no idp.truststore.path to fall back to
+    # (HttpClientFactoryUtils.createHttpClient falls back on a blank value, but a blank
+    # path here would still fail - there is nothing to fall back TO). Points at the
+    # truststore.jks already present in the dpn-tls secret this chart mounts for its own
+    # inbound HTTPS listener (see tls.* above, tls.mountPath) - same file
+    # redis.truststorePath already uses, no new Secret/volume needed.
+    truststorePath: /tls/truststore.jks
+    truststorePassword: ""
+    # Sourced from the SAME pre-existing "dpn-keycloak-secrets" Secret (key
+    # KC_SERVICE_CLIENT_SECRET) the sibling certificate-manager repo already reads for this
+    # exact client - not Key Vault CSI, which requires keyvault.enabled=true and was never
+    # actually populated for this purpose in any environment. Default true.
+    clientSecretEnabled: true
+  # server.properties / common-configuration.properties, rendered from these values by the
+  # new demo-runner-server-config.yaml - mirrors demo-runner-client's own clientProperties
+  # block in shape.
+  serverProperties:
+    configMapName: dpn-demo-runner-server-properties
+    mountPath: /config
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
