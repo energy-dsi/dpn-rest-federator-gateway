@@ -1,0 +1,203 @@
+# One-shot Job that runs the demo call sequence and exits.
+#
+# A Job's pod spec is immutable once created, so a Job cannot be "re-invoked"
+# with different parameters. Instead each run creates a NEW Job object: the name
+# carries .Values.job.nameSuffix, which the CD pipeline sets to the build id.
+# Run parameters (mpan, postcode, ...) are passed through as container env vars.
+#
+# Ad-hoc run:
+#   helm upgrade --install dpn-demo-runner-client charts/dpn-demo-runner-client \
+#     -n <namespace> \
+#     --set job.nameSuffix=$(date +%s) \
+#     --set job.env.mpan=1000000000002 \
+#     --set job.env.postcode="SW1A 1AA"
+#
+# Read the output with:
+#   kubectl logs job/<name> -n <namespace>
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-%s" .Values.job.name (.Values.job.nameSuffix | toString) | trunc 63 | trimSuffix "-" }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.job.name }}
+spec:
+  # Keep finished Jobs around briefly so their logs can be read, then reap them.
+  ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.job.name }}
+    spec:
+      restartPolicy: Never
+      {{- if .Values.imagePullSecret }}
+      imagePullSecrets:
+        - name: {{ .Values.imagePullSecret }}
+      {{- end }}
+      containers:
+        - name: {{ .Values.job.name }}
+          image: "{{ .Values.job.image.repository }}:{{ .Values.job.image.tag }}"
+          imagePullPolicy: {{ .Values.job.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+          env:
+            # Required: the producing organisation + DSM data product name this
+            # consumer is entitled to. Together they identify the product; the
+            # rest-federator-client resolves the internal producer id from the
+            # Management Node's getConsumerConfig — it is never set here.
+            - name: ORGANISATION_NAME
+              value: {{ .Values.job.env.organisationName | quote }}
+            - name: PRODUCT_NAME
+              value: {{ .Values.job.env.productName | quote }}
+            # Demo inputs — set per run by the CD pipeline parameters.
+            - name: MPAN
+              value: {{ .Values.job.env.mpan | quote }}
+            - name: POSTCODE
+              value: {{ .Values.job.env.postcode | quote }}
+            {{- if .Values.job.env.assetId }}
+            - name: ASSET_ID
+              value: {{ .Values.job.env.assetId | quote }}
+            {{- end }}
+            {{- if .Values.job.env.fspId }}
+            - name: FSP_ID
+              value: {{ .Values.job.env.fspId | quote }}
+            {{- end }}
+            - name: SENDER_FMAR_ID
+              value: {{ .Values.job.env.senderFmarId | quote }}
+            - name: SENDER_ROLE
+              value: {{ .Values.job.env.senderRole | quote }}
+            - name: CONTRACTUAL_AUTHORISATION
+              value: {{ .Values.job.env.contractualAuthorisation | quote }}
+            # client.properties supplies the Management Node URL, IDP settings and
+            # keystore/truststore paths used by rest-federator-client.
+            - name: FEDERATOR_CLIENT_PROPERTIES
+              value: {{ .Values.job.clientProperties.mountPath }}/client.properties
+            {{- if .Values.job.redisIdp.clientSecretEnabled }}
+            # Client secret for the redis.idp.* Keycloak client (dpn-service-client -
+            # Redis-gating AND OTLP export auth, see OtelBearerTokenSupport.java).
+            # Deliberately NOT rendered into the ConfigMap as a plain value - injected as a
+            # JVM system property instead, picked up automatically via JAVA_TOOL_OPTIONS.
+            # Sourced from the SAME pre-existing "dpn-keycloak-secrets" Secret (key
+            # KC_SERVICE_CLIENT_SECRET) the sibling certificate-manager repo already reads
+            # for this exact client - not Key Vault CSI, which requires keyvault.enabled=true
+            # and was never actually populated for this purpose.
+            - name: REDIS_IDP_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: dpn-keycloak-secrets
+                  key: KC_SERVICE_CLIENT_SECRET
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dredis.idp.client.secret=$(REDIS_IDP_CLIENT_SECRET)"
+            {{- end }}
+            {{- with .Values.job.vault }}
+            # Vault. With tlsEnabled the TLS material is read straight from
+            # Vault — mirrors the gateway's own wiring. Secret name/keys match
+            # the federator gateway's own convention exactly.
+            - name: VAULT_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tls-auth-secret
+                  key: TRUSTSTORE_PASSWORD
+            - name: VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .tokenSecretName | default "certificate-manager-secrets" }}
+                  key: VAULT_TOKEN
+                  # Absent in AppRole mode; a required key would crash the pod.
+                  optional: true
+            {{- if eq (lower .authMethod) "approle" }}
+            - name: VAULT_ROLE_ID
+              value: {{ .appRole.roleId | quote }}
+            - name: VAULT_SECRET_ID
+            {{- if .appRole.useSecretIdRef }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .appRole.secretIdSecretName }}
+                  key: {{ .appRole.secretIdSecretKey }}
+            {{- else }}
+              value: {{ .appRole.secretId | quote }}
+            {{- end }}
+            {{- end }}
+            # Path Vault is read at to dynamically override keystore/truststore
+            # passwords (client/server/idp/redis) - see PropertyUtil.VaultMappings.
+            # Without this, redis.truststore.password stays blank instead of
+            # being resolved from Vault.
+            - name: VAULT_KEYSTORE_PASSWORD_PATH
+              value: {{ .keystorePasswordPath | quote }}
+            - name: VAULT_TRUSTSTORE_PASSWORD_PATH
+              value: {{ .truststorePasswordPath | quote }}
+            {{- end }}
+            {{- with .Values.job.otel }}
+            # OTLP export target. Without these the SDK falls back to its
+            # default localhost:4317, where nothing is listening inside the
+            # Job's pod, so every export fails and telemetry is lost.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .endpoint | quote }}
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: {{ .protocol | quote }}
+            - name: OTEL_EXPORTER_OTLP_INSECURE
+              value: {{ .insecure | quote }}
+            {{- if .tls.enabled }}
+            # HTTPS export to the OTel Collector - trusts its cert via the SAME common-DPN
+            # truststore Vault's own TLS connection already uses (no new Secret/volume; the
+            # vault-truststore volume below is already mounted at /vault/truststore
+            # unconditionally). See OtlpTruststoreSupport.java. Omitted entirely when
+            # otel.tls.enabled is false (default).
+            - name: OTEL_EXPORTER_OTLP_TRUSTSTORE_PATH
+              value: {{ $.Values.job.vault.truststorePath | quote }}
+            - name: OTEL_EXPORTER_OTLP_TRUSTSTORE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: tls-auth-secret
+                  key: TRUSTSTORE_PASSWORD
+            {{- end }}
+            # Authenticates OTLP export with an OAuth2 Bearer token - see
+            # OtelBearerTokenSupport.java. Independent of otel.tls.enabled above. Reuses the
+            # SAME dpn-service-client redis.idp.* config rendered into
+            # demo-runner-client-config.yaml (see redisIdp block in values.yaml) - no
+            # separate client, secret, or env var is needed just for this.
+            - name: OTEL_EXPORTER_OTLP_OAUTH_ENABLED
+              value: {{ .oauth2.enabled | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: {{ .serviceName | quote }}
+            - name: OTEL_TRACES_SAMPLER
+              value: {{ .tracesSampler | quote }}
+            - name: OTEL_TRACES_SAMPLER_ARG
+              value: {{ .tracesSamplerArg | quote }}
+            # Export ONE log record per OTLP request. The health dashboard's Data Prepper pipeline
+            # indexes only the first record of each batch (logRecords/0); this one-shot Job otherwise
+            # sends its whole run as a single request, so only one record (never the heartbeat or the
+            # rest_client_* events) would reach the dashboard. Applies to both SDKs in the process.
+            - name: OTEL_BLRP_MAX_EXPORT_BATCH_SIZE
+              value: {{ .logExportBatchSize | default 1 | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: client-properties
+              mountPath: {{ .Values.job.clientProperties.mountPath }}
+              readOnly: true
+            {{- if .Values.job.certificates.enabled }}
+            - name: certificates
+              mountPath: {{ .Values.job.certificates.mountPath }}
+              readOnly: true
+            {{- end }}
+            # Truststore used to reach Vault itself (always mounted).
+            - name: vault-truststore
+              mountPath: /vault/truststore
+              readOnly: true
+          {{- with .Values.job.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      volumes:
+        - name: client-properties
+          configMap:
+            name: {{ .Values.job.clientProperties.configMapName }}
+        {{- if .Values.job.certificates.enabled }}
+        - name: certificates
+          secret:
+            secretName: {{ .Values.job.certificates.secretName }}
+        {{- end }}
+        - name: vault-truststore
+          secret:
+            secretName: cert-manager-truststore

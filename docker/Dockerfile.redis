@@ -1,0 +1,31 @@
+# Hardened Redis image for charts/dpn-redis.
+#
+# Why: the upstream redis:7.4-alpine image ships /usr/local/bin/gosu, a Go
+# binary built with Go 1.26.7. JFrog Xray flags the embedded Go stdlib
+# (github.com/golang/go 1.26.7 -> fixed in 1.26.9 / 1.27.2): 2 Critical
+# (CVE-2026-78663, CVE-2026-56857) and 8 High (CVE-2026-94440, -94439, -78669,
+# -78667, -78660, -56866, -97031, -78659).
+#
+# gosu is only used by the upstream docker-entrypoint.sh to drop root. The
+# dpn-redis chart overrides `command: redis-server ...`, so the entrypoint (and
+# gosu) is never executed. Removing the binary is therefore safe.
+#
+# The final stage is flattened (FROM scratch + COPY) so the vulnerable gosu
+# layer does not remain in the image history for Xray to index.
+#
+# Build:  docker build --pull --no-cache -f docker/Dockerfile.redis \
+#           -t <registry>/dpn-redis:<tag> .
+
+FROM redis:7.4-alpine AS base
+RUN apk upgrade --no-cache \
+ && rm -f /usr/local/bin/gosu
+
+FROM scratch
+COPY --from=base / /
+# Re-declare the metadata that COPY --from does not carry over.
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+VOLUME /data
+WORKDIR /data
+EXPOSE 6379
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["redis-server"]

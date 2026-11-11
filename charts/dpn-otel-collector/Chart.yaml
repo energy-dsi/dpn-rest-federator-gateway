@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dpn-otel-collector
+description: Local OTLP collector for the REST Federator gateway's minikube demo — receives traces/logs/metrics from rest-federator-server, rest-federator-client, demo-runner-server and demo-runner-client, and prints them via the debug exporter
+type: application
+version: 0.1.0
+appVersion: "0.105.0"

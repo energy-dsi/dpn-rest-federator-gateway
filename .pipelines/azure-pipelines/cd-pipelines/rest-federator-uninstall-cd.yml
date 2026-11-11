@@ -1,0 +1,281 @@
+# Uninstall pipeline for dpn-rest-federator-gateway.
+#
+# One run uninstalls every Helm release this repo's own CD pipelines deploy
+# into NAMESPACE: dpn-redis, dpn-rest-federator, dpn-demo-runner-server,
+# dpn-demo-runner-client. Nothing else (e.g. dpn-platform's Kafka/Zookeeper,
+# which come from a different repo) is touched.
+
+trigger: none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+      - sc-dpn-dev-001
+      - sc-dpn-dev-002
+      - sc-dpn-test-001
+      - sc-dpn-test-002
+      - sc-dpn-pdev-ppd-001
+      - sc-dpn-ptest-ppd-001
+      - sc-dpn-puat-ppd-001
+
+- name: environment
+  displayName: Environment Name
+  type: string
+  default: 'dev'
+  values:
+      - dev
+      - devtest
+      - test
+      - pdev
+      - ptest
+      - puat
+
+- name: cluster
+  displayName: Target DPN Cluster
+  type: string
+  default: 'dpn01'
+  values:
+    - dpn01
+    - dpn02
+
+variables:
+  - name: PARAMETERS_FILE
+    value: .pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json
+
+  # Approval group routing, shared across all DPN CD pipelines.
+  - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-ppd
+  - ${{ elseif or(eq(parameters.environment, 'devtest'), eq(parameters.environment, 'test')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-devtest
+  - ${{ else }}:
+    - name: APPROVAL_GROUP
+      value: dsi-dev
+
+stages:
+
+# -----------------------------------------------------
+# Stage 0 — Pre-Uninstall Checklist
+# -----------------------------------------------------
+- stage: Precheck
+  displayName: "Pre-Uninstall Checklist"
+  jobs:
+  - job: Checklist
+    steps:
+    - script: |
+        echo "PRE-UNINSTALL CHECKLIST"
+        echo "------------------------------------------------"
+        echo "Confirm ALL before proceeding:"
+        echo ""
+        echo "All CI pipelines disabled"
+        echo "All CD pipelines disabled"
+        echo "No active demo-runner jobs in flight"
+        echo "Backups taken where required"
+        echo ""
+        echo "Do NOT proceed unless all checks pass."
+      displayName: "Operator Confirmation"
+
+    # pdev, ptest and puat only have a single DPN (dpn01). dpn02 is not
+    # provisioned in those environments, so fail fast rather than uninstalling
+    # against a config file that doesn't exist.
+    - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+      - script: |
+          if [ "${{ parameters.cluster }}" == "dpn02" ]; then
+            echo "##[error]cluster=dpn02 is disabled for environment=${{ parameters.environment }}. This environment only has dpn01."
+            exit 1
+          fi
+        displayName: "Guard: dpn02 disabled for ${{ parameters.environment }}"
+
+
+# -----------------------------------------------------
+# Stage 1 — Prepare (Load Config + AKS Auth)
+# -----------------------------------------------------
+- stage: Prepare
+  displayName: "Prepare AKS Context"
+  dependsOn: Precheck
+  jobs:
+  - job: Prepare
+    steps:
+    - script: |
+        for k in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+          v=$(jq -r ".\"$k\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+          echo "##vso[task.setvariable variable=$k]$v"
+        done
+      displayName: "Load Environment Config"
+
+    - task: AzureCLI@2
+      displayName: "AKS Authentication"
+      inputs:
+        azureSubscription: "${{ parameters.ServiceConnection }}"
+        addSpnToEnvironment: true
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az aks install-cli
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+
+# -----------------------------------------------------
+# Stage 2 — Approval (SKIPPED FOR dev)
+# -----------------------------------------------------
+- ${{ if ne(parameters.environment, 'dev') }}:
+  - stage: Approval
+    displayName: "Approval – Confirm Deletion Scope"
+    dependsOn: Prepare
+    jobs:
+    - deployment: ApproveUninstall
+      displayName: "Approve REST Federator Gateway Uninstall"
+      environment: ${{ variables.APPROVAL_GROUP }}
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+            - script: |
+                echo "===================================================="
+                echo "REST FEDERATOR GATEWAY UNINSTALL — APPROVAL REQUIRED"
+                echo "===================================================="
+                echo ""
+                echo "The following Helm releases WILL be deleted"
+                echo "ONCE APPROVAL IS GRANTED:"
+                echo ""
+                echo "  dpn-redis"
+                echo "  dpn-rest-federator"
+                echo "  dpn-demo-runner-server"
+                echo "  dpn-demo-runner-client"
+                echo ""
+                echo "Nothing else in the namespace is touched."
+                echo ""
+              displayName: "Approval Context Header"
+
+            - task: AzureCLI@2
+              displayName: "Preview Helm Releases (READ-ONLY)"
+              inputs:
+                azureSubscription: "${{ parameters.ServiceConnection }}"
+                addSpnToEnvironment: true
+                scriptType: bash
+                scriptLocation: inlineScript
+                inlineScript: |
+                  set -euo pipefail
+                  az aks install-cli
+                  az aks get-credentials \
+                    --resource-group $(RESOURCE_GROUP) \
+                    --name $(AKS_CLUSTER) \
+                    --overwrite-existing
+                  kubelogin convert-kubeconfig -l azurecli
+
+                  echo ""
+                  echo "Helm releases that will be deleted:"
+                  echo "----------------------------------------------------"
+
+                  for Release in dpn-redis dpn-rest-federator dpn-demo-runner-server dpn-demo-runner-client; do
+                    if helm status "$Release" -n "$(NAMESPACE)" >/dev/null 2>&1; then
+                      echo "Helm release to be deleted: $Release"
+                    else
+                      echo "Release '$Release' not found in namespace $(NAMESPACE); nothing to uninstall."
+                    fi
+                  done
+
+                  echo ""
+                  echo "----------------------------------------------------"
+                  echo "NO resources have been deleted in this stage."
+                  echo "Deletion will occur ONLY after approval."
+                  echo "===================================================="
+
+
+# -----------------------------------------------------
+# Stage 3 — Helm Uninstall
+# -----------------------------------------------------
+- stage: Uninstall
+  displayName: "Uninstall REST Federator Gateway"
+  dependsOn:
+    - Prepare
+    - ${{ if ne(parameters.environment, 'dev') }}:
+      - Approval
+
+  jobs:
+  - job: Uninstall
+    displayName: "Helm Uninstall"
+    steps:
+    - script: |
+        for k in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+          v=$(jq -r ".\"$k\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+          echo "##vso[task.setvariable variable=$k]$v"
+        done
+      displayName: 'Reload Environment Variables'
+
+    - task: AzureCLI@2
+      displayName: "Helm Uninstall All Releases"
+      inputs:
+        azureSubscription: "${{ parameters.ServiceConnection }}"
+        addSpnToEnvironment: true
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az aks install-cli
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+          for Release in dpn-redis dpn-rest-federator dpn-demo-runner-server dpn-demo-runner-client; do
+            if helm status "$Release" -n "$(NAMESPACE)" >/dev/null 2>&1; then
+              echo "Found Helm release '$Release' in namespace $(NAMESPACE). Uninstalling..."
+              helm uninstall "$Release" -n "$(NAMESPACE)"
+            else
+              echo "Release '$Release' not found in namespace $(NAMESPACE); nothing to uninstall."
+            fi
+          done
+
+
+# -----------------------------------------------------
+# Stage 4 — Final Verification
+# -----------------------------------------------------
+- stage: Verify
+  displayName: "Final Verification"
+  dependsOn: Uninstall
+  jobs:
+  - job: Verify
+    displayName: "Verify Removal"
+    steps:
+    - script: |
+        for k in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+          v=$(jq -r ".\"$k\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+          echo "##vso[task.setvariable variable=$k]$v"
+        done
+      displayName: 'Reload Environment Variables'
+
+    - task: AzureCLI@2
+      displayName: "Verify Removal"
+      inputs:
+        azureSubscription: "${{ parameters.ServiceConnection }}"
+        addSpnToEnvironment: true
+        scriptType: bash
+        scriptLocation: inlineScript
+        inlineScript: |
+          set -euo pipefail
+          az aks install-cli
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+          echo "Pods:"
+          kubectl get pods -n $(NAMESPACE)
+
+          echo "Helm Releases:"
+          helm list -n $(NAMESPACE)

@@ -1,0 +1,36 @@
+redisCache:
+  enabled: true
+  name: dpn-rest-federator-redis
+  image:
+    repository: redis
+    tag: "7.4-alpine"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    # TLS-only. --port 0 (in redis-deployment.yaml) disables plaintext entirely -
+    # this is the ONLY port, and it always speaks TLS. Matches the sibling gRPC
+    # federator's own dpn-redis deployment exactly. RedisUtil.java (this
+    # project's client) always connects over TLS unconditionally, so there is
+    # no consumer left that would ever need a plain listener.
+    port: 6379
+  # Certificate: extracted at pod startup (see the initContainer in
+  # redis-deployment.yaml) from the existing dpn-tls Kubernetes secret's
+  # keystore.jks - the same common DPN identity certificate already used
+  # everywhere else in this platform. No new secret or provisioning pipeline
+  # change is needed.
+  tls:
+    secretName: dpn-tls
+    # Confirmed directly against the sibling gRPC federator's own source
+    # (dpn-federator-gateway/charts/dpn-platform/templates/redis.yaml): the
+    # keystore password comes from a SEPARATE secret named "tls-auth-secret",
+    # key "KEYSTORE_PASSWORD" - NOT from within dpn-tls itself. This project
+    # needs the equivalent "tls-auth-secret" provisioned the same way.
+    secretPasswordName: tls-auth-secret
+    secretPasswordKey: KEYSTORE_PASSWORD
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

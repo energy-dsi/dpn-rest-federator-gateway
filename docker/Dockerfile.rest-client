@@ -1,0 +1,31 @@
+# Dockerfile for the rest-federator-client library jar.
+#
+# NOTE: rest-federator-client is a LIBRARY, not an application -- it has no
+# main class and nothing to run. This image exists only to distribute the jar
+# (for consumers that pull it from the registry rather than a Maven repo), so
+# it has no ENTRYPOINT that starts a service.
+#
+# The runnable example consumer is demo/demo-runner-client, which imports this
+# library and has its own Dockerfile.
+
+FROM eclipse-temurin:21-jre AS rest-federator-client
+
+# Full upgrade, not just openssl/libssl3t64 -- JFrog Xray flags CVEs across
+# the base image's whole OS package set (util-linux, login, rust-coreutils,
+# etc.), not only TLS libraries.
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /app/ && \
+	groupadd appgroup && \
+	useradd -Mg appgroup rest-federator-service && \
+	chown -R :appgroup /app/
+
+WORKDIR /app
+ARG JAR_NAME
+COPY client/target/${JAR_NAME}.jar /app/rest-federator-client.jar
+USER rest-federator-service
+
+# Library image -- prints the jar location instead of starting a service.
+ENTRYPOINT ["sh", "-c", "echo 'rest-federator-client library at /app/rest-federator-client.jar'"]

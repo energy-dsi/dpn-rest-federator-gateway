@@ -1,0 +1,123 @@
+name: DPN Uninstall - REST Federator Gateway
+
+# Matches the real ADO rest-federator-uninstall-cd.yml: one run uninstalls
+# every Helm release this repo's own CD pipelines deploy into NAMESPACE —
+# dpn-redis, dpn-rest-federator, dpn-demo-runner-server, dpn-demo-runner-client.
+# Nothing else (e.g. dpn-platform's Kafka/Zookeeper, a different repo) is touched.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Select Environment"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - test
+
+      cluster:
+        description: "Target DPN Cluster"
+        required: true
+        default: "dpn01"
+        type: choice
+        options:
+          - dpn01
+          - dpn02
+
+      cloud:
+        description: "Target Cloud Provider"
+        required: true
+        default: "aws"
+        type: choice
+        options:
+          - azure
+          - aws
+
+      confirm:
+        description: 'Type "uninstall-all" to confirm'
+        required: true
+        type: string
+
+env:
+  PARAMETERS_FILE: .github/config/${{ inputs.cloud }}/${{ inputs.environment }}-${{ inputs.cluster }}.json
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  uninstall:
+    name: Helm Uninstall - REST Federator Gateway
+    runs-on: [self-hosted, vmss]
+    environment: ${{ inputs.environment }}-${{ inputs.cluster }}
+    steps:
+      - name: Validate Confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.confirm }}" != "uninstall-all" ]]; then
+            echo "ERROR: confirmation text '${{ inputs.confirm }}' does not match 'uninstall-all'."
+            exit 1
+          fi
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Read Deployment Config
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -f "${PARAMETERS_FILE}" ]; then
+            echo "ERROR: ${PARAMETERS_FILE} not found!"
+            exit 1
+          fi
+          for key in $(jq -r 'keys_unsorted[]' "${PARAMETERS_FILE}"); do
+            value=$(jq -r ".\"$key\"" "${PARAMETERS_FILE}")
+            echo "${key}=${value}" >> "$GITHUB_ENV"
+          done
+
+      - name: Pre-Uninstall Checklist
+        shell: bash
+        run: |
+          echo "CONFIRM BEFORE PROCEEDING:"
+          echo "1. All CI pipelines disabled"
+          echo "2. All CD pipelines disabled"
+          echo "3. No active demo-runner jobs in flight"
+          echo "4. Backups taken where required"
+          echo "5. This uninstalls ALL FOUR releases in one run: dpn-redis, dpn-rest-federator,"
+          echo "   dpn-demo-runner-server, dpn-demo-runner-client — nothing else is touched"
+          echo "   (e.g. dpn-platform's Kafka/Zookeeper, which belongs to a different repo)"
+
+      - name: Cloud Login
+        uses: ./.github/actions/cloud-login
+        with:
+          cloud: ${{ inputs.cloud }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          aws-region: ${{ env.AWS_REGION }}
+          aws-account-id: ${{ env.AWS_ACCOUNT_ID }}
+          eks-cluster: ${{ env.EKS_CLUSTER }}
+
+      - name: Helm Uninstall
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for RELEASE in dpn-redis dpn-rest-federator dpn-demo-runner-server dpn-demo-runner-client; do
+            if helm status "$RELEASE" -n "$NAMESPACE" >/dev/null 2>&1; then
+              echo "Found Helm release '$RELEASE' in namespace $NAMESPACE. Uninstalling..."
+              helm uninstall "$RELEASE" -n "$NAMESPACE"
+            else
+              echo "Release '$RELEASE' not found in namespace $NAMESPACE; nothing to uninstall."
+            fi
+          done
+
+      - name: Verification
+        shell: bash
+        run: |
+          echo "Remaining Helm releases in $NAMESPACE:"
+          helm list -n "$NAMESPACE"
+          echo "Remaining pods:"
+          kubectl get pods -n "$NAMESPACE" | grep -E "redis|rest-federator|demo-runner" || echo "(none)"

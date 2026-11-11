@@ -1,0 +1,424 @@
+# Shared DPN — REST Federator + Redis CD pipeline (N instances)
+#
+# Deploys the SHARED DPN REST federator instances 02..N, each with its own
+# dedicated Redis, as separate Helm releases:
+#   dpn-redis-0N           (charts/dpn-redis,          redisCache.name dpn-rest-federator-redis-N)
+#   dpn-rest-federator-0N  (charts/dpn-rest-federator, restFederatorServer.name dpn-rest-federator-server-N)
+# The primary releases (dpn-redis, dpn-rest-federator) are NEVER touched — they
+# are deployed by rest-federator-cd.yml.
+#
+# totalDpnCount = how many DPNs in total, INCLUDING the primary:
+#   2 -> primary + 02             (deploys dpn-redis-02 + dpn-rest-federator-02)
+#   3 -> primary + 02, 03
+#
+# Every shared instance needs its own overlays, layered on top of the primary files:
+#   charts/dpn-redis/values-<env>-<cluster>-0N.yaml
+#   charts/dpn-rest-federator/values-<env>-<cluster>-0N.yaml
+# The pipeline first checks ALL overlays 02..N exist (names -N, no
+# <PLACEHOLDER-...> left) and exits before deploying anything if not.
+#
+# Vault wiring check (every instance, before anything deploys):
+# .pipelines/scripts/shared-dpn-wiring-check.sh inspects the rendered release and
+# fails unless REST federator N uses ONLY dpn-vault-https-0N and Secret
+# certificate-manager-0N-secrets, with the SAME client id and role id as the live
+# dpn-certificate-manager-0N (ConfigMap dpn-certificate-manager-0N-config).
+#
+# The REST chart templates only know about one instance, so each REST release is
+# installed from a copy of the chart holding just the server Deployment, Service,
+# LoadBalancer Service and ConfigMap. The HPA is not duplicated: it has a fixed
+# name and keeps targeting the primary Deployment only.
+#
+# Prerequisites: for each instance 0N the dpn-federator-certificate-manager
+# shared pipelines (dpn-vault-https-0N, certificate-manager-0N-secrets).
+
+trigger: none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+      - sc-dpn-dev-001
+      - sc-dpn-dev-002
+      - sc-dpn-test-001
+      - sc-dpn-test-002
+      - sc-dpn-pdev-ppd-001
+      - sc-dpn-ptest-ppd-001
+      - sc-dpn-puat-ppd-001
+
+- name: environment
+  displayName: Environment Name
+  type: string
+  default: 'dev'
+  values:
+      - dev
+      - devtest
+      - test
+      - pdev
+      - ptest
+      - puat
+
+- name: cluster
+  displayName: Target DPN Cluster
+  type: string
+  default: 'dpn01'
+  values:
+    - dpn01
+    - dpn02
+
+- name: totalDpnCount
+  displayName: "Total DPNs INCLUDING the primary (e.g. 3 = primary + shared 02, 03). Minimum 2. Deploys shared REST federator + Redis 02..N only"
+  type: number
+  default: 2
+
+- name: imageTag
+  type: string
+  displayName: 'REST Federator Server Image tag (the CI run''s Build.BuildId, e.g. 236904)'
+
+variables:
+  - name: HELM_DIR
+    value: charts/dpn-rest-federator
+  - name: REDIS_HELM_DIR
+    value: charts/dpn-redis
+
+  # Shared instance N releases = $(RELEASE_PREFIX)-0N / $(REDIS_RELEASE_PREFIX)-0N
+  - name: RELEASE_PREFIX
+    value: dpn-rest-federator
+  - name: REDIS_RELEASE_PREFIX
+    value: dpn-redis
+
+  - name: VALUES_FILE
+    value: values-${{ parameters.environment }}-${{ parameters.cluster }}.yaml
+  # Instance overlay = <chart>/$(VALUES_PREFIX)-0N.yaml
+  - name: VALUES_PREFIX
+    value: values-${{ parameters.environment }}-${{ parameters.cluster }}
+
+  - name: TOTAL_DPN
+    value: "${{ parameters.totalDpnCount }}"
+
+  - name: PARAMETERS_FILE
+    value: .pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json
+
+  # Approval group
+  - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-ppd
+  - ${{ elseif or(eq(parameters.environment, 'devtest'), eq(parameters.environment, 'test')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-devtest
+  - ${{ else }}:
+    - name: APPROVAL_GROUP
+      value: dsi-dev
+
+stages:
+
+  # ---------------------------------------------------------------
+  # Validate — values files for every instance 02..N, before anything deploys
+  # ---------------------------------------------------------------
+- stage: Validate
+  displayName: "Validate Shared DPN [${{ parameters.environment }}-${{ parameters.cluster }}] x 02..${{ parameters.totalDpnCount }}"
+  jobs:
+  - job: Validate
+    displayName: "Check Shared DPN Values Files"
+    steps:
+    - checkout: self
+
+    - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+      - script: |
+          if [ "${{ parameters.cluster }}" == "dpn02" ]; then
+            echo "##[error]cluster=dpn02 is disabled for environment=${{ parameters.environment }}. This environment only has dpn01."
+            exit 1
+          fi
+        displayName: "Guard: dpn02 disabled for ${{ parameters.environment }}"
+
+    - script: |
+        set -uo pipefail
+        TOTAL="$(TOTAL_DPN)"
+        if ! [[ "$TOTAL" =~ ^[0-9]+$ ]] || [ "$TOTAL" -lt 2 ]; then
+          echo "##[error]totalDpnCount must be 2 or more (it counts the primary): got '$TOTAL'."
+          echo "##[error]Example: 3 = primary + shared 02, 03."
+          exit 1
+        fi
+        for f in "$(HELM_DIR)/$(VALUES_FILE)" "$(REDIS_HELM_DIR)/$(VALUES_FILE)"; do
+          if [ ! -f "$f" ]; then
+            echo "##[error]Primary values file not present: $f — so exiting."
+            exit 1
+          fi
+        done
+        echo "Shared instances requested : 02..$(printf '%02d' "$TOTAL") ($((TOTAL - 1)) instance(s))"
+
+        # name: under the given top-level section of a values file
+        section_name() { awk -v s="^$1:" '$0 ~ s {f=1; next} f && /^[^[:space:]#]/ {f=0} f && $1=="name:" {gsub(/"/,"",$2); print $2; exit}' "$2"; }
+
+        FAILED=0
+        for i in $(seq 2 "$TOTAL"); do
+          N=$(printf '%02d' "$i")
+          REST_F="$(HELM_DIR)/$(VALUES_PREFIX)-$N.yaml"
+          REDIS_F="$(REDIS_HELM_DIR)/$(VALUES_PREFIX)-$N.yaml"
+          OK=1
+          for F in "$REST_F" "$REDIS_F"; do
+            if [ ! -f "$F" ]; then
+              echo "##[error]Values file not present for shared DPN $N: $F"
+              OK=0
+            fi
+          done
+          [ "$OK" -eq 1 ] || { FAILED=1; continue; }
+
+          # A copied overlay with the wrong name would overwrite another instance.
+          REST_NAME=$(section_name restFederatorServer "$REST_F")
+          REDIS_NAME=$(section_name redisCache "$REDIS_F")
+          if [ "$REST_NAME" != "dpn-rest-federator-server-$i" ]; then
+            echo "##[error]$REST_F must set restFederatorServer.name dpn-rest-federator-server-$i (found '${REST_NAME}')."
+            OK=0
+          fi
+          if [ "$REDIS_NAME" != "dpn-rest-federator-redis-$i" ]; then
+            echo "##[error]$REDIS_F must set redisCache.name dpn-rest-federator-redis-$i (found '${REDIS_NAME}')."
+            OK=0
+          fi
+          for F in "$REST_F" "$REDIS_F"; do
+            if grep -vE '^[[:space:]]*#' "$F" | grep -q 'PLACEHOLDER'; then
+              echo "##[error]$F still contains <PLACEHOLDER-...> values:"
+              grep -vE '^[[:space:]]*#' "$F" | grep 'PLACEHOLDER' | sed 's/^/##[error]  /'
+              OK=0
+            fi
+          done
+          if [ "$OK" -eq 1 ]; then
+            echo "  [OK] shared DPN $N -> $REST_F + $REDIS_F"
+          else
+            FAILED=1
+          fi
+        done
+
+        if [ "$FAILED" -ne 0 ]; then
+          echo "##[error]Shared DPN values file(s) missing or incomplete — so exiting. Nothing was deployed."
+          exit 1
+        fi
+      displayName: "Check Shared DPN Values Files (02..${{ parameters.totalDpnCount }})"
+
+  # ---------------------------------------------------------------
+  # Deploy — per instance: Redis 0N, then REST federator 0N.
+  #
+  # APPROVAL IS INTEGRATED INTO THE DEPLOY STAGE (same as rest-federator-cd.yml):
+  # an environment-bound "Approve" deployment job the deploy job dependsOn, so
+  # the deploy can never run without sign-off even if stages are deselected.
+  # ---------------------------------------------------------------
+- stage: Deploy_Shared_DPN
+  displayName: "Deploy Shared REST Federators + Redis to AKS"
+  dependsOn: Validate
+  condition: succeeded()
+  jobs:
+  - deployment: Approve
+    displayName: "Approval Gate"
+    environment: ${{ variables.APPROVAL_GROUP }}
+    pool:
+      name: '<<YOUR AGENT POOL>>'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: |
+              echo "Approved — deploying shared DPN REST federators + Redis for ${{ parameters.environment }}-${{ parameters.cluster }}"
+              echo "Total DPNs : ${{ parameters.totalDpnCount }} (primary untouched)"
+              echo "Releases   : $(for i in $(seq 2 $(TOTAL_DPN)); do printf 'dpn-redis-%02d dpn-rest-federator-%02d ' "$i" "$i"; done)"
+
+  - job: Deploy
+    displayName: "Helm Deploy - Shared REST Federators + Redis (02..${{ parameters.totalDpnCount }})"
+    dependsOn: Approve
+
+    pool:
+      name: '<<YOUR AGENT POOL>>'
+
+    steps:
+    - checkout: self
+
+    - script: |
+        echo "Loading config: $(PARAMETERS_FILE)"
+        if [ ! -f "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)" ]; then
+          echo "##[error]Config file not found: $(PARAMETERS_FILE)"
+          exit 1
+        fi
+        for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+          value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+          echo "##vso[task.setvariable variable=$param]$value"
+        done
+      displayName: Load Environment Config
+
+    - task: AzureCLI@2
+      displayName: "AKS Auth + Helm Deploy (loop over shared instances)"
+      inputs:
+        azureSubscription: '${{ parameters.ServiceConnection }}'
+        scriptType: bash
+        scriptLocation: inlineScript
+        workingDirectory: '$(Build.SourcesDirectory)'
+        inlineScript: |
+          set -euo pipefail
+          cd "$(Build.SourcesDirectory)"
+
+          echo "================================================="
+          echo " INSTALL TOOLS"
+          echo "================================================="
+          if ! command -v kubectl &>/dev/null || ! command -v kubelogin &>/dev/null; then
+            az aks install-cli --client-version 1.32.3 --kubelogin-version 0.2.18
+          else
+            echo "kubectl and kubelogin already installed, skipping"
+          fi
+          kubectl version --client >/dev/null
+          kubelogin --version >/dev/null
+          helm version >/dev/null
+
+          az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+          echo "=========================================="
+          echo " PRE-FLIGHT — SHARED RESOURCES"
+          echo "=========================================="
+          # tls-auth-secret is created once per namespace by dpn-tls-cd.yaml
+          # (dpn-federator-certificate-manager) and read by every Redis + REST instance.
+          if ! kubectl get secret tls-auth-secret -n $(NAMESPACE) >/dev/null 2>&1; then
+            echo "##[error]tls-auth-secret not found in $(NAMESPACE) — run dpn-tls-cd first."
+            exit 1
+          fi
+          echo "  [OK] tls-auth-secret"
+          for i in $(seq 2 $(TOTAL_DPN)); do
+            N=$(printf '%02d' "$i")
+            kubectl get svc dpn-vault-https-$N -n $(NAMESPACE) >/dev/null 2>&1 \
+              || { echo "##[error]Service dpn-vault-https-$N not found — run shared-vault-https-cd (dpn-federator-certificate-manager) first."; exit 1; }
+            kubectl get secret certificate-manager-$N-secrets -n $(NAMESPACE) >/dev/null 2>&1 \
+              || { echo "##[error]Secret certificate-manager-$N-secrets not found — run shared-certificate-manager-cd (dpn-federator-certificate-manager) first."; exit 1; }
+            echo "  [OK] shared DPN $N: dpn-vault-https-$N + certificate-manager-$N-secrets"
+          done
+
+          # See rest-federator-cd.yml for why TRUSTSTORE-PASSWORD is the canonical secret.
+          VAULT_TRUSTSTORE_PASSWORD=$(az keyvault secret show \
+            --vault-name $(KEY_VAULT_NAME) \
+            --name TRUSTSTORE-PASSWORD \
+            --query value -o tsv)
+          echo "##vso[task.setvariable variable=VAULT_TRUSTSTORE_PASSWORD;issecret=true]$VAULT_TRUSTSTORE_PASSWORD"
+
+          # Copy of the REST chart holding only the per-instance templates.
+          SHARED_CHART_DIR="$(Agent.TempDirectory)/dpn-rest-federator-shared"
+          rm -rf "$SHARED_CHART_DIR"
+          cp -r "$(HELM_DIR)" "$SHARED_CHART_DIR"
+          find "$SHARED_CHART_DIR/templates" -maxdepth 1 -type f \
+            ! -name 'rest-federator-server-deployment.yaml' \
+            ! -name 'rest-federator-server-service.yaml' \
+            ! -name 'rest-federator-server-lb-service.yaml' \
+            ! -name 'rest-federator-server-config.yaml' \
+            -delete
+
+          REST_ARGS=(
+            --set restFederatorServer.image.repository="$(CONTAINER_REGISTRY_URL)/dpn-rest-federator-server"
+            --set restFederatorServer.image.tag="${{ parameters.imageTag }}"
+            --set restFederatorServer.vault.truststorePassword="$VAULT_TRUSTSTORE_PASSWORD"
+          )
+
+          echo "=========================================="
+          echo " HELM VALIDATION — ALL SHARED INSTANCES"
+          echo "=========================================="
+          for i in $(seq 2 $(TOTAL_DPN)); do
+            N=$(printf '%02d' "$i")
+            REDIS_VALUES=(-f "$(REDIS_HELM_DIR)/$(VALUES_FILE)" -f "$(REDIS_HELM_DIR)/$(VALUES_PREFIX)-$N.yaml")
+            REST_VALUES=(-f "$(HELM_DIR)/$(VALUES_FILE)" -f "$(HELM_DIR)/$(VALUES_PREFIX)-$N.yaml")
+            helm lint "$(REDIS_HELM_DIR)" "${REDIS_VALUES[@]}"
+            helm upgrade --install $(REDIS_RELEASE_PREFIX)-$N "$(REDIS_HELM_DIR)" \
+              -n $(NAMESPACE) "${REDIS_VALUES[@]}" --dry-run >/dev/null
+            helm lint "$SHARED_CHART_DIR" "${REST_VALUES[@]}"
+            helm upgrade --install $(RELEASE_PREFIX)-$N "$SHARED_CHART_DIR" \
+              -n $(NAMESPACE) "${REST_ARGS[@]}" "${REST_VALUES[@]}" --dry-run >/dev/null
+            echo "  [OK] shared DPN $N dry-run (dpn-redis-$N + dpn-rest-federator-$N)"
+
+            echo "------------------------------------------"
+            echo " VAULT WIRING CHECK — dpn-rest-federator-server-$i -> dpn-vault-https-$N"
+            echo "------------------------------------------"
+            # dpn-certificate-manager-$N enrols the signing cert in dpn-vault-https-$N;
+            # this instance must use exactly the same Vault, client id and role id.
+            CM_CFG="dpn-certificate-manager-$N-config"
+            LIVE_CLIENT_ID=$(kubectl get cm $CM_CFG -n $(NAMESPACE) -o jsonpath='{.data.OAUTH2_CLIENT_ID}' 2>/dev/null || true)
+            LIVE_ROLE_ID=$(kubectl get cm $CM_CFG -n $(NAMESPACE) -o jsonpath='{.data.VAULT_APPROLE_ROLE_ID}' 2>/dev/null || true)
+            LIVE_VAULT_URI=$(kubectl get cm $CM_CFG -n $(NAMESPACE) -o jsonpath='{.data.VAULT_URI}' 2>/dev/null || true)
+            if [ -z "$LIVE_CLIENT_ID" ] || [ -z "$LIVE_ROLE_ID" ]; then
+              echo "##[error]ConfigMap $CM_CFG not found or incomplete — run shared-certificate-manager-cd (dpn-federator-certificate-manager) first."
+              exit 1
+            fi
+            case "$LIVE_VAULT_URI" in
+              "https://dpn-vault-https-$N."*) echo "  [OK] dpn-certificate-manager-$N uses $LIVE_VAULT_URI" ;;
+              *) echo "##[error]dpn-certificate-manager-$N itself points at $LIVE_VAULT_URI, not dpn-vault-https-$N — fix and redeploy it first."; exit 1 ;;
+            esac
+
+            # Rendered without the truststore password: the output is only inspected, never applied.
+            helm template $(RELEASE_PREFIX)-$N "$SHARED_CHART_DIR" \
+              -n $(NAMESPACE) "${REST_VALUES[@]}" > "$(Agent.TempDirectory)/rendered-rest-$N.yaml"
+            bash .pipelines/scripts/shared-dpn-wiring-check.sh \
+              --rendered "$(Agent.TempDirectory)/rendered-rest-$N.yaml" \
+              --instance "$N" \
+              --label dpn-rest-federator-server-$i \
+              --expect-client-id "$LIVE_CLIENT_ID" \
+              --expect-role-id "$LIVE_ROLE_ID"
+          done
+
+          mkdir -p $(Build.ArtifactStagingDirectory)/deployed-digest
+
+          for i in $(seq 2 $(TOTAL_DPN)); do
+            N=$(printf '%02d' "$i")
+            REDIS_NAME="dpn-rest-federator-redis-$i"
+            SERVER_NAME="dpn-rest-federator-server-$i"
+            REDIS_VALUES=(-f "$(REDIS_HELM_DIR)/$(VALUES_FILE)" -f "$(REDIS_HELM_DIR)/$(VALUES_PREFIX)-$N.yaml")
+            REST_VALUES=(-f "$(HELM_DIR)/$(VALUES_FILE)" -f "$(HELM_DIR)/$(VALUES_PREFIX)-$N.yaml")
+
+            echo "=========================================="
+            echo " SHARED DPN $N — HELM DEPLOY REDIS ($(REDIS_RELEASE_PREFIX)-$N)"
+            echo "=========================================="
+            helm upgrade --install $(REDIS_RELEASE_PREFIX)-$N "$(REDIS_HELM_DIR)" \
+              -n $(NAMESPACE) "${REDIS_VALUES[@]}"
+            kubectl rollout status deployment/${REDIS_NAME} -n $(NAMESPACE) --timeout=300s
+            kubectl get svc -n $(NAMESPACE) -l app=${REDIS_NAME}
+
+            echo "=========================================="
+            echo " SHARED DPN $N — HELM DEPLOY REST FEDERATOR ($(RELEASE_PREFIX)-$N)"
+            echo "=========================================="
+            helm upgrade --install $(RELEASE_PREFIX)-$N "$SHARED_CHART_DIR" \
+              -n $(NAMESPACE) "${REST_ARGS[@]}" "${REST_VALUES[@]}"
+
+            if ! kubectl rollout status deployment/${SERVER_NAME} -n $(NAMESPACE) --timeout=300s; then
+              echo "##[error]Rollout of ${SERVER_NAME} did not complete -- dumping diagnostics"
+              kubectl get pods -n $(NAMESPACE) -l app=${SERVER_NAME} -o wide
+              kubectl describe pods -n $(NAMESPACE) -l app=${SERVER_NAME}
+              kubectl logs -n $(NAMESPACE) -l app=${SERVER_NAME} --tail=300 --all-containers=true || true
+              kubectl logs -n $(NAMESPACE) -l app=${SERVER_NAME} --tail=300 --all-containers=true --previous || true
+              exit 1
+            fi
+            kubectl get svc -n $(NAMESPACE) -l app=${SERVER_NAME}
+            kubectl get pods -n $(NAMESPACE) -l app=${SERVER_NAME}
+
+            SERVER_DIGEST=$(kubectl get pods -n $(NAMESPACE) -l app=${SERVER_NAME} \
+              -o jsonpath='{.items[0].status.containerStatuses[0].imageID}')
+            if [ -z "$SERVER_DIGEST" ]; then
+              echo "##[error]Could not resolve deployed ${SERVER_NAME} image digest from pod status"
+              exit 1
+            fi
+            {
+              echo "$SERVER_DIGEST"
+              echo "component=rest-federator-server"
+              echo "instance=$N"
+              echo "release=$(RELEASE_PREFIX)-$N"
+              echo "environment=${{ parameters.environment }}"
+              echo "cluster=${{ parameters.cluster }}"
+              echo "imageTag=${{ parameters.imageTag }}"
+            } > $(Build.ArtifactStagingDirectory)/deployed-digest/rest-federator-server-$N-digest.txt
+
+            echo "SHARED DPN $N (Redis + REST federator) DEPLOYMENT COMPLETE"
+          done
+
+    - task: PublishBuildArtifacts@1
+      displayName: 'Publish Deployed Image Digests'
+      inputs:
+        pathtoPublish: '$(Build.ArtifactStagingDirectory)/deployed-digest'
+        ArtifactName: 'deployed-image-digest'

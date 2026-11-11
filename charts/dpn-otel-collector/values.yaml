@@ -1,0 +1,53 @@
+otelCollector:
+  name: dpn-otel-collector
+  replicaCount: 1
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.105.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    otlpGrpcPort: 4317
+    otlpHttpPort: 4318
+  # Server-side TLS for the OTLP HTTP receiver. false by default - zero change for any
+  # environment not opting in; the receiver stays plaintext HTTP exactly as it is today.
+  # Reuses the SAME shared dpn-tls secret (keystore.jks, alias "federator") already used
+  # by dpn-redis's own TLS init-container in this same platform - no new secret or
+  # provisioning pipeline change is needed. See redis-deployment.yaml's own
+  # "redis-tls-cert-init" for the identical pattern this is modelled on.
+  tls:
+    enabled: false
+    secretName: dpn-tls
+    # Confirmed against dpn-redis/values.yaml: the keystore password comes from a
+    # SEPARATE secret named "tls-auth-secret", key "KEYSTORE_PASSWORD" - not from
+    # within dpn-tls itself.
+    secretPasswordName: tls-auth-secret
+    secretPasswordKey: KEYSTORE_PASSWORD
+  # Verifies the OAuth2 Bearer token REST Federator attaches when
+  # application.otel.oauth2.enabled/OTEL_EXPORTER_OTLP_OAUTH_ENABLED is true on the client
+  # side (see dpn-rest-federator/OtelBearerTokenSupport.java) - independent of tls.enabled
+  # above: auth can be required with or without TLS, though enabling auth without TLS means
+  # the token travels in plaintext, which defeats the point. false by default - zero change
+  # for any environment not opting in; a client sending a Bearer token to a collector with
+  # auth.enabled=false simply has that header ignored, exactly like today.
+  auth:
+    enabled: false
+    # Same Keycloak realm/issuer dpn-service-client actually authenticates against for
+    # redisIdp.tokenUrl in dpn-rest-federator's own values-<env>.yaml (confirmed by a real
+    # client_credentials token fetch): the dpn-realm realm on the in-cluster dpn-keycloak
+    # service, NOT the auth-mtls.<env><<your specific value>>/realms/management-node issuer used
+    # by the separate idp.* (private_key_jwt/mTLS) client. Set this per-environment to that
+    # realm's base URL, e.g. "https://dpn-keycloak.ns-dpn-01.svc.cluster.local:8443/realms/
+    # dpn-realm" (no /protocol/openid-connect/... suffix - this is the issuer, not the token
+    # endpoint).
+    oidcIssuerUrl: ""
+    # Must match the "aud" claim on tokens dpn-service-client receives. If tokens come back
+    # with a different audience in a given realm, override this per-environment too.
+    audience: dpn-service-client
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

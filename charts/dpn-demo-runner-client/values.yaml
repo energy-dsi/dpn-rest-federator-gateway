@@ -1,0 +1,175 @@
+job:
+  name: dpn-demo-runner-client
+  # Overridden per run (--set job.nameSuffix=$(Build.BuildId)) so each pipeline
+  # run creates a distinct Job object rather than trying to mutate one.
+  nameSuffix: "manual"
+  image:
+    repository: <<CONTAINER_REGISTRY_URL>>/dpn-demo-runner-client
+    tag: "latest"
+    pullPolicy: Always
+  # Keep completed Jobs for an hour so their logs can be inspected.
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  env:
+    organisationName: ""              # blank = every subscribed organisation
+    productName: ""                   # blank = every subscribed product; together with organisationName above, blank/blank targets ALL subscriptions
+    mpan: "1000000000001"
+    postcode: "SW1A 1AA"
+    # Left blank -> the client omits assetId / generates a random FSP id.
+    assetId: ""
+    fspId: ""
+    senderFmarId: "dpn-demo-runner-client"
+    senderRole: "FSP"
+    contractualAuthorisation: "true"
+  consumerId: ""
+  readTimeoutSeconds: 60
+  resilience:
+    retryMaxAttempts: ""
+
+  # Management Node serving this consumer's REST product configuration.
+  managementNode:
+    baseUrl: https://localhost:8090
+    requestTimeout: 5
+    cacheTtlSeconds: 60
+
+  # IDP token acquisition cache. Points at the same Redis the gateway uses.
+  # dpn-redis is now TLS-only, single port (--port 0 disables plaintext entirely) -
+  # matching the sibling gRPC federator's own dpn-redis deployment exactly. port
+  # below is the ONLY port dpn-redis exposes, and it always speaks TLS. tlsEnabled
+  # below is rendered only for backward compatibility with the ConfigMap's existing
+  # schema — RedisUtil ignores it (Redis TLS is unconditional and can no longer be
+  # turned off from here).
+  redis:
+    host: dpn-rest-federator-redis
+    port: 6379
+    tlsEnabled: true
+    # Reuses the already-mounted vault-truststore volume (cert-manager-truststore
+    # Secret) rather than an unmounted /tls path - no volume is ever mounted at
+    # /tls in this chart. Redis's cert is derived from the same common DPN
+    # certificate this truststore already trusts, and its password is resolved
+    # dynamically from Vault via VAULT_TRUSTSTORE_PASSWORD_PATH below (see
+    # PropertyUtil.VaultMappings / RedisUtil.REDIS_TRUSTSTORE_PASSWORD).
+    truststorePath: /vault/truststore/truststore.jks
+    truststorePassword: ""
+    prefix: federator-client
+    username: ""
+
+  # Identity Provider. Keystore/truststore passwords are not set here — the
+  # Vault secret provider supplies them at startup.
+  idp:
+    clientId: ""
+    authMode: private_key_jwt
+    mtlsEnabled: true
+    jwksUrl: ""
+    tokenUrl: ""
+    jwtAlgorithm: RS256
+    jwtKeyAlias: federator
+    keystorePath: /tls/keystore.p12
+    truststorePath: /tls/truststore.jks
+
+  # Dedicated Keycloak client for Redis-gating AND for authenticating OTLP export
+  # (see charts/dpn-rest-federator's own identical redisIdp block and
+  # OtelBearerTokenSupport.java) - dpn-service-client, client_secret auth (unlike
+  # idp.* above, which uses private_key_jwt/mTLS for this app's OWN business-logic
+  # calls - a genuinely different client). tokenUrl/clientId are set explicitly
+  # per-environment (same dpn-keycloak/dpn-realm token endpoint everywhere) rather than
+  # falling back to idp.tokenUrl/idp.clientId, which is provisioned for private_key_jwt/
+  # mTLS only and cannot serve this client_credentials flow.
+  redisIdp:
+    tokenUrl: ""
+    clientId: dpn-service-client
+    # /vault/truststore/truststore.jks - the SAME common DPN truststore already mounted
+    # unconditionally in this Job for Vault/Redis/OTLP - trusts dpn-keycloak's certificate
+    # (verified directly: real TLS handshake, not skip-verify). NOT idp.truststore.path's
+    # default of /tls/truststore.jks, which this chart never mounts - falling back to it
+    # here would fail every token fetch with a file-not-found error that retries forever
+    # without ever self-healing.
+    truststorePath: /vault/truststore/truststore.jks
+    # Sourced from the SAME pre-existing "dpn-keycloak-secrets" Secret (key
+    # KC_SERVICE_CLIENT_SECRET) the sibling certificate-manager repo already reads for this
+    # exact client - not Key Vault CSI, which requires keyvault.enabled=true and was never
+    # actually populated for this purpose in any environment. Default true.
+    clientSecretEnabled: true
+
+  # client.properties / common-configuration.properties, rendered from these
+  # values by demo-runner-client-config.yaml.
+  clientProperties:
+    configMapName: dpn-rest-federator-client-properties
+    mountPath: /config
+
+  # mTLS keystore/truststore for rest-federator-client's outbound calls, as
+  # plain files from a Secret. Only used when vault.tlsEnabled is false below.
+  certificates:
+    enabled: false
+    secretName: dpn-federator-certificates
+    mountPath: /certs
+
+  # Vault. authMethod: token | approle. tlsEnabled reads the TLS material
+  # straight from Vault instead of a mounted keystore/truststore file.
+  vault:
+    uri: ""
+    truststorePath: /vault/truststore/truststore.jks
+    truststorePassword: ""
+    authMethod: token
+    tlsEnabled: true
+    tlsBasePath: node-net/client
+    tlsKeystoreAlias: federator
+    # Vault KV path the app reads at startup to dynamically override
+    # keystore/truststore passwords (client/server/idp/redis - see
+    # PropertyUtil.VaultMappings), matching charts/dpn-rest-federator's own
+    # values.yaml exactly. Without these, redis.truststore.password (and the
+    # others) stay blank instead of being resolved from Vault.
+    keystorePasswordPath: node-net/client/keystore-password#password
+    truststorePasswordPath: node-net/client/truststore-password#password
+    # VAULT_TRUSTSTORE_PASSWORD (tls-auth-secret), VAULT_TOKEN
+    # (certificate-manager-secrets) and the vault-truststore volume
+    # (cert-manager-truststore) are sourced from fixed Secret names directly
+    # in the Job template -- not configurable here, matching the federator
+    # gateway's own convention.
+    appRole:
+      roleId: ""
+      mountPath: approle
+      renewalIntervalSeconds: 3600
+      # secretId is only used when useSecretIdRef is false (NOT recommended).
+      secretId: ""
+      # When true, VAULT_SECRET_ID is sourced from a Kubernetes Secret via
+      # secretKeyRef instead of a plaintext value. Set true per-env.
+      useSecretIdRef: false
+      secretIdSecretName: certificate-manager-secrets
+      secretIdSecretKey: VAULT_APPROLE_SECRET_ID
+  otel:
+    endpoint: ""
+    protocol: "grpc"
+    insecure: "true"
+    serviceName: "demo-runner-client"
+    tracesSampler: "parentbased_traceidratio"
+    tracesSamplerArg: "1.0"
+    # HTTPS export to the OTel Collector - see the matching comment in
+    # charts/dpn-rest-federator/values.yaml (otel.tls.enabled). Same behaviour here: false by
+    # default, reuses vault.truststorePath below and the already-mounted vault-truststore
+    # volume when turned on - no new Secret/volume needed.
+    tls:
+      enabled: false
+    # Authenticates OTLP export to the Collector with an OAuth2 Bearer token (see
+    # OtelBearerTokenSupport - this app calls the same OpenTelemetryConfig.initialize() the
+    # REST Federator gateway does, in FmarDemoRunner.main(), so the code path is identical).
+    # Independent of tls.enabled above. false by default - zero change for any environment
+    # not opting in.
+    #
+    # NOT exercised end-to-end this way in local testing - only the REST Federator gateway's
+    # own OTel OAuth was actually verified against a real Collector. OtelBearerTokenSupport
+    # unconditionally authenticates as the redis.idp.* client (dpn-service-client), but this
+    # chart's own demo-runner-client-config.yaml template renders redis.host/port/prefix/
+    # username only - NO redis.idp.* fields at all. Enabling this today would fail at
+    # runtime with a blank token URL. Add redis.idp.token.url/client.id/client.secret to
+    # that ConfigMap template (mirroring charts/dpn-rest-federator's own redisIdp.* values)
+    # before ever turning this on.
+    oauth2:
+      enabled: false
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "256Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"

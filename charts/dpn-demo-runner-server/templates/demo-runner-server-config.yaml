@@ -1,0 +1,46 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.demoRunnerServer.serverProperties.configMapName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.demoRunnerServer.name }}
+data:
+  server.properties: |
+    common.configuration=/config/common-configuration.properties
+
+    redis.host={{ .Values.demoRunnerServer.redis.host }}
+    redis.port={{ .Values.demoRunnerServer.redis.port }}
+    redis.prefix={{ .Values.demoRunnerServer.redis.prefix }}
+
+  common-configuration.properties: |
+    vault.uri={{ .Values.demoRunnerServer.vault.uri }}
+    vault.truststore.path={{ .Values.demoRunnerServer.vault.truststorePath }}
+    vault.truststore.password={{ .Values.demoRunnerServer.vault.truststorePassword }}
+
+    vault.auth.method={{ .Values.demoRunnerServer.vault.authMethod }}
+    vault.approle.mount-path={{ .Values.demoRunnerServer.vault.appRole.mountPath }}
+    vault.approle.renewal-interval-seconds={{ .Values.demoRunnerServer.vault.appRole.renewalIntervalSeconds }}
+
+    vault.tls.enabled={{ .Values.demoRunnerServer.vault.tlsEnabled }}
+    vault.tls.secret-base-path={{ .Values.demoRunnerServer.vault.tlsBasePath }}
+    vault.tls.keystore-alias={{ .Values.demoRunnerServer.vault.tlsKeystoreAlias }}
+
+    # ---- Redis TLS + Keycloak gating (see KeycloakAuthConfig / RedisUtil) ----
+    # redis.tls.enabled deliberately left unset - RedisUtil defaults it to true, and
+    # dpn-redis is TLS-only anyway (see the matching comment on demoRunnerServer.redis
+    # above), so there is no unused value key just for this.
+    redis.truststore.path={{ .Values.demoRunnerServer.redis.truststorePath }}
+    redis.truststore.password={{ .Values.demoRunnerServer.redis.truststorePassword }}
+
+    # Dedicated Keycloak client (dpn-service-client) used to gate Redis access AND, when
+    # otel.oauth2.enabled, to authenticate OTLP export (see OtelBearerTokenSupport.java) -
+    # this app has no separate idp.* client. redis.idp.client.secret is deliberately not
+    # rendered here as a literal - supplied via the dpn-keycloak-secrets Secret /
+    # -Dredis.idp.client.secret system property (see redisIdp.clientSecretEnabled in
+    # values.yaml and demo-runner-server-deployment.yaml).
+    redis.idp.token.url={{ .Values.demoRunnerServer.redisIdp.tokenUrl }}
+    redis.idp.client.id={{ .Values.demoRunnerServer.redisIdp.clientId }}
+    redis.idp.client.secret=
+    redis.idp.truststore.path={{ .Values.demoRunnerServer.redisIdp.truststorePath }}
+    redis.idp.truststore.password={{ .Values.demoRunnerServer.redisIdp.truststorePassword }}

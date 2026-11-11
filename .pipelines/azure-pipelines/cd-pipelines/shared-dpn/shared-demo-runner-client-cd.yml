@@ -1,0 +1,426 @@
+# Shared DPN — Demo Runner Client CD pipeline (N instances)
+#
+# Runs the demo runner client Job for the SHARED DPN instances 02..N, each as
+# its own Helm release:
+#   dpn-demo-runner-client-0N  (charts/dpn-demo-runner-client, job.name dpn-demo-runner-client-N)
+# The primary release (dpn-demo-runner-client) is NEVER touched — it is run by
+# demo-runner-cd.yml. The demo backend (dpn-demo-runner-server-1) is shared with
+# the primary and is not deployed here.
+#
+# totalDpnCount = how many DPNs in total, INCLUDING the primary:
+#   2 -> primary + 02             (runs dpn-demo-runner-client-02)
+#   3 -> primary + 02, 03
+#
+# Every shared instance needs its own overlay, layered on top of the primary file:
+#   charts/dpn-demo-runner-client/values-<env>-<cluster>-0N.yaml
+# The pipeline first checks ALL overlays 02..N exist (job.name -N, no
+# <PLACEHOLDER-...> left) and exits before running anything if not.
+#
+# Vault wiring check (every instance, before anything runs):
+# .pipelines/scripts/shared-dpn-wiring-check.sh inspects the rendered release and
+# fails unless demo runner client N uses ONLY dpn-vault-https-0N and Secret
+# certificate-manager-0N-secrets, with the SAME client id and role id as the live
+# dpn-certificate-manager-0N (ConfigMap dpn-certificate-manager-0N-config).
+#
+# HOW EACH CLIENT RECEIVES ITS PARAMETERS — same as demo-runner-cd.yml: every run
+# creates a NEW Job object (job.nameSuffix = Build.BuildId), and the run
+# parameters below are passed through Helm into the container's env: block.
+# Read a run's output with:
+#   kubectl logs job/dpn-demo-runner-client-N-<buildId> -n <namespace>
+#
+# Prerequisites for each instance 0N:
+#   dpn-federator-certificate-manager shared pipelines (dpn-vault-https-0N,
+#   dpn-certificate-manager-0N enrolled, certificate-manager-0N-secrets) and
+#   shared-rest-federator-cd.yml (dpn-rest-federator-redis-N).
+
+trigger: none
+
+pool:
+  name: '<<YOUR AGENT POOL>>'
+
+parameters:
+- name: ServiceConnection
+  displayName: 'ServiceConnection details'
+  type: string
+  default: 'sc-dpn-dev-001'
+  values:
+      - sc-dpn-dev-001
+      - sc-dpn-dev-002
+      - sc-dpn-test-001
+      - sc-dpn-test-002
+      - sc-dpn-pdev-ppd-001
+      - sc-dpn-ptest-ppd-001
+      - sc-dpn-puat-ppd-001
+
+- name: environment
+  displayName: Environment Name
+  type: string
+  default: 'dev'
+  values:
+      - dev
+      - devtest
+      - test
+      - pdev
+      - ptest
+      - puat
+
+- name: cluster
+  displayName: Target DPN Cluster
+  type: string
+  default: 'dpn01'
+  values:
+    - dpn01
+    - dpn02
+
+- name: totalDpnCount
+  displayName: "Total DPNs INCLUDING the primary (e.g. 3 = primary + shared 02, 03). Minimum 2. Runs shared demo runner clients 02..N only"
+  type: number
+  default: 2
+
+- name: imageTag
+  type: string
+  displayName: 'Demo Runner Client image tag (the demo-runner CI run''s Build.BuildId)'
+
+# ---- Demo run parameters (passed into every client Job's env) ----
+- name: mpan
+  type: string
+  default: '1000000000001'
+  displayName: 'Import MPAN (13 digits)'
+
+- name: postcode
+  type: string
+  default: 'SW1A 1AA'
+  displayName: 'Postcode'
+
+- name: assetId
+  type: string
+  default: 'none'
+  displayName: "Asset id (a UUID, or 'none' to omit -- the Run pipeline UI won't accept an empty string here)"
+
+- name: fspId
+  type: string
+  default: 'none'
+  displayName: "FSP id (a UUID, or 'none' for a random one -- the Run pipeline UI won't accept an empty string here)"
+
+# organisationName / productName are intentionally NOT pipeline parameters — see
+# demo-runner-cd.yml. They come from the chart values (blank = all subscriptions).
+
+variables:
+  - name: CLIENT_HELM_DIR
+    value: charts/dpn-demo-runner-client
+
+  # Shared instance N release = $(RELEASE_PREFIX)-0N
+  - name: RELEASE_PREFIX
+    value: dpn-demo-runner-client
+
+  - name: VALUES_FILE
+    value: values-${{ parameters.environment }}-${{ parameters.cluster }}.yaml
+  # Instance overlay = $(CLIENT_HELM_DIR)/$(VALUES_PREFIX)-0N.yaml
+  - name: VALUES_PREFIX
+    value: values-${{ parameters.environment }}-${{ parameters.cluster }}
+
+  - name: TOTAL_DPN
+    value: "${{ parameters.totalDpnCount }}"
+
+  - name: PARAMETERS_FILE
+    value: .pipelines/azure-pipelines/config/${{ parameters.environment }}-${{ parameters.cluster }}.json
+
+  # Approval group
+  - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-ppd
+  - ${{ elseif or(eq(parameters.environment, 'devtest'), eq(parameters.environment, 'test')) }}:
+    - name: APPROVAL_GROUP
+      value: dsi-devtest
+  - ${{ else }}:
+    - name: APPROVAL_GROUP
+      value: dsi-dev
+
+stages:
+
+  # ---------------------------------------------------------------
+  # Validate — values files for every instance 02..N, before anything runs
+  # ---------------------------------------------------------------
+- stage: Validate
+  displayName: "Validate Shared DPN [${{ parameters.environment }}-${{ parameters.cluster }}] x 02..${{ parameters.totalDpnCount }}"
+  jobs:
+  - job: Validate
+    displayName: "Check Shared DPN Values Files"
+    steps:
+    - checkout: self
+
+    - ${{ if or(eq(parameters.environment, 'pdev'), eq(parameters.environment, 'ptest'), eq(parameters.environment, 'puat')) }}:
+      - script: |
+          if [ "${{ parameters.cluster }}" == "dpn02" ]; then
+            echo "##[error]cluster=dpn02 is disabled for environment=${{ parameters.environment }}. This environment only has dpn01."
+            exit 1
+          fi
+        displayName: "Guard: dpn02 disabled for ${{ parameters.environment }}"
+
+    - script: |
+        set -uo pipefail
+        TOTAL="$(TOTAL_DPN)"
+        if ! [[ "$TOTAL" =~ ^[0-9]+$ ]] || [ "$TOTAL" -lt 2 ]; then
+          echo "##[error]totalDpnCount must be 2 or more (it counts the primary): got '$TOTAL'."
+          echo "##[error]Example: 3 = primary + shared 02, 03."
+          exit 1
+        fi
+        if [ ! -f "$(CLIENT_HELM_DIR)/$(VALUES_FILE)" ]; then
+          echo "##[error]Primary values file not present: $(CLIENT_HELM_DIR)/$(VALUES_FILE) — so exiting."
+          exit 1
+        fi
+        echo "Shared instances requested : 02..$(printf '%02d' "$TOTAL") ($((TOTAL - 1)) instance(s))"
+
+        # name: under the given top-level section of a values file
+        section_name() { awk -v s="^$1:" '$0 ~ s {f=1; next} f && /^[^[:space:]#]/ {f=0} f && $1=="name:" {gsub(/"/,"",$2); print $2; exit}' "$2"; }
+
+        FAILED=0
+        for i in $(seq 2 "$TOTAL"); do
+          N=$(printf '%02d' "$i")
+          F="$(CLIENT_HELM_DIR)/$(VALUES_PREFIX)-$N.yaml"
+          if [ ! -f "$F" ]; then
+            echo "##[error]Values file not present for shared DPN $N: $F"
+            FAILED=1
+            continue
+          fi
+          OK=1
+
+          # A copied overlay with the wrong name would collide with another instance's Job.
+          JOB_NAME=$(section_name job "$F")
+          if [ "$JOB_NAME" != "dpn-demo-runner-client-$i" ]; then
+            echo "##[error]$F must set job.name dpn-demo-runner-client-$i (found '${JOB_NAME}')."
+            OK=0
+          fi
+          if grep -vE '^[[:space:]]*#' "$F" | grep -q 'PLACEHOLDER'; then
+            echo "##[error]$F still contains <PLACEHOLDER-...> values:"
+            grep -vE '^[[:space:]]*#' "$F" | grep 'PLACEHOLDER' | sed 's/^/##[error]  /'
+            OK=0
+          fi
+          if [ "$OK" -eq 1 ]; then
+            echo "  [OK] shared DPN $N -> $F"
+          else
+            FAILED=1
+          fi
+        done
+
+        if [ "$FAILED" -ne 0 ]; then
+          echo "##[error]Shared DPN values file(s) missing or incomplete — so exiting. Nothing was run."
+          exit 1
+        fi
+      displayName: "Check Shared DPN Values Files (02..${{ parameters.totalDpnCount }})"
+
+  # ---------------------------------------------------------------
+  # Run — one client Job per instance 02..N.
+  #
+  # APPROVAL IS INTEGRATED INTO THE RUN STAGE (same as demo-runner-cd.yml):
+  # an environment-bound "Approve" deployment job the run job dependsOn, so
+  # the Jobs can never run without sign-off even if stages are deselected.
+  # ---------------------------------------------------------------
+- stage: Run_Shared_DemoRunnerClients
+  displayName: "Run Shared Demo Runner Client Jobs"
+  dependsOn: Validate
+  condition: succeeded()
+  jobs:
+  - deployment: Approve
+    displayName: "Approval Gate"
+    environment: ${{ variables.APPROVAL_GROUP }}
+    pool:
+      name: '<<YOUR AGENT POOL>>'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - script: |
+              echo "Approved — running shared DPN demo runner clients for ${{ parameters.environment }}-${{ parameters.cluster }}"
+              echo "Total DPNs : ${{ parameters.totalDpnCount }} (primary untouched)"
+              echo "Releases   : $(for i in $(seq 2 $(TOTAL_DPN)); do printf 'dpn-demo-runner-client-%02d ' "$i"; done)"
+
+  - job: RunClientJobs
+    displayName: "Helm Deploy - Shared Demo Runner Client Jobs (02..${{ parameters.totalDpnCount }})"
+    dependsOn: Approve
+
+    pool:
+      name: '<<YOUR AGENT POOL>>'
+
+    steps:
+    - checkout: self
+
+    - script: |
+        echo "Loading config: $(PARAMETERS_FILE)"
+        if [ ! -f "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)" ]; then
+          echo "##[error]Config file not found: $(PARAMETERS_FILE)"
+          exit 1
+        fi
+        for param in $(jq -r 'keys_unsorted | .[]' "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)"); do
+          value=$(jq -r ".\"$param\"" "$(Build.SourcesDirectory)/$(PARAMETERS_FILE)")
+          echo "##vso[task.setvariable variable=$param]$value"
+        done
+      displayName: Load Environment Config
+
+    - task: AzureCLI@2
+      displayName: "AKS Auth + Create Demo Runner Client Jobs (loop over shared instances)"
+      inputs:
+        azureSubscription: '${{ parameters.ServiceConnection }}'
+        scriptType: bash
+        scriptLocation: inlineScript
+        workingDirectory: '$(Build.SourcesDirectory)'
+        inlineScript: |
+          set -euo pipefail
+          cd "$(Build.SourcesDirectory)"
+
+          if ! command -v kubectl &>/dev/null || ! command -v kubelogin &>/dev/null; then
+            az aks install-cli --client-version 1.32.3 --kubelogin-version 0.2.18
+          fi
+          helm version >/dev/null
+
+          az account set --subscription $(AZURE_SUBSCRIPTION_ID)
+          az aks get-credentials \
+            --resource-group $(RESOURCE_GROUP) \
+            --name $(AKS_CLUSTER) \
+            --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+
+          echo "=========================================="
+          echo " PRE-FLIGHT — SHARED + PER-INSTANCE RESOURCES"
+          echo "=========================================="
+          # Shared by every client: truststore password, Vault truststore and the
+          # Redis IdP client secret (same Secrets the primary client reads).
+          for s in tls-auth-secret cert-manager-truststore dpn-keycloak-secrets; do
+            kubectl get secret $s -n $(NAMESPACE) >/dev/null 2>&1 \
+              || { echo "##[error]Secret $s not found in $(NAMESPACE)."; exit 1; }
+            echo "  [OK] $s"
+          done
+          for i in $(seq 2 $(TOTAL_DPN)); do
+            N=$(printf '%02d' "$i")
+            kubectl get svc dpn-vault-https-$N -n $(NAMESPACE) >/dev/null 2>&1 \
+              || { echo "##[error]Service dpn-vault-https-$N not found — run shared-vault-https-cd (dpn-federator-certificate-manager) first."; exit 1; }
+            kubectl get secret certificate-manager-$N-secrets -n $(NAMESPACE) >/dev/null 2>&1 \
+              || { echo "##[error]Secret certificate-manager-$N-secrets not found — run shared-certificate-manager-cd (dpn-federator-certificate-manager) first."; exit 1; }
+            kubectl get svc dpn-rest-federator-redis-$i -n $(NAMESPACE) >/dev/null 2>&1 \
+              || { echo "##[error]Service dpn-rest-federator-redis-$i not found — run shared-rest-federator-cd first."; exit 1; }
+            echo "  [OK] shared DPN $N: dpn-vault-https-$N + certificate-manager-$N-secrets + dpn-rest-federator-redis-$i"
+          done
+
+          # assetId/fspId 'none' sentinel -> blank, see demo-runner-cd.yml.
+          ASSET_ID="${{ parameters.assetId }}"
+          FSP_ID="${{ parameters.fspId }}"
+          if [ "$ASSET_ID" = "none" ]; then ASSET_ID=""; fi
+          if [ "$FSP_ID" = "none" ]; then FSP_ID=""; fi
+
+          echo "=========================================="
+          echo " RUN PARAMETERS (every instance)"
+          echo "=========================================="
+          echo "  org / product: (from chart values — blank = all subscriptions)"
+          echo "  mpan         : ${{ parameters.mpan }}"
+          echo "  postcode     : ${{ parameters.postcode }}"
+          echo "  asset id     : ${ASSET_ID:-<none>}"
+          echo "  fsp id       : ${FSP_ID:-<random>}"
+
+          # See demo-runner-cd.yml for why TRUSTSTORE-PASSWORD is the canonical secret.
+          VAULT_TRUSTSTORE_PASSWORD=$(az keyvault secret show \
+            --vault-name $(KEY_VAULT_NAME) \
+            --name TRUSTSTORE-PASSWORD \
+            --query value -o tsv)
+          echo "##vso[task.setvariable variable=VAULT_TRUSTSTORE_PASSWORD;issecret=true]$VAULT_TRUSTSTORE_PASSWORD"
+
+          # nameSuffix makes each run a distinct Job object; a Job's pod spec
+          # cannot be changed in place.
+          CLIENT_ARGS=(
+            --set job.image.repository="$(CONTAINER_REGISTRY_URL)/dpn-demo-runner-client"
+            --set job.image.tag="${{ parameters.imageTag }}"
+            --set job.nameSuffix="$(Build.BuildId)"
+            --set job.env.mpan="${{ parameters.mpan }}"
+            --set job.env.postcode="${{ parameters.postcode }}"
+            --set job.env.assetId="$ASSET_ID"
+            --set job.env.fspId="$FSP_ID"
+          )
+
+          echo "=========================================="
+          echo " HELM VALIDATION — ALL SHARED INSTANCES"
+          echo "=========================================="
+          for i in $(seq 2 $(TOTAL_DPN)); do
+            N=$(printf '%02d' "$i")
+            CLIENT_VALUES=(-f "$(CLIENT_HELM_DIR)/$(VALUES_FILE)" -f "$(CLIENT_HELM_DIR)/$(VALUES_PREFIX)-$N.yaml")
+            helm lint "$(CLIENT_HELM_DIR)" "${CLIENT_VALUES[@]}"
+            helm upgrade --install $(RELEASE_PREFIX)-$N "$(CLIENT_HELM_DIR)" \
+              -n $(NAMESPACE) "${CLIENT_ARGS[@]}" "${CLIENT_VALUES[@]}" \
+              --set job.vault.truststorePassword="$VAULT_TRUSTSTORE_PASSWORD" --dry-run >/dev/null
+            echo "  [OK] shared DPN $N dry-run ($(RELEASE_PREFIX)-$N)"
+
+            echo "------------------------------------------"
+            echo " VAULT WIRING CHECK — dpn-demo-runner-client-$i -> dpn-vault-https-$N"
+            echo "------------------------------------------"
+            # dpn-certificate-manager-$N enrols the signing cert in dpn-vault-https-$N;
+            # this client must use exactly the same Vault, client id and role id.
+            CM_CFG="dpn-certificate-manager-$N-config"
+            LIVE_CLIENT_ID=$(kubectl get cm $CM_CFG -n $(NAMESPACE) -o jsonpath='{.data.OAUTH2_CLIENT_ID}' 2>/dev/null || true)
+            LIVE_ROLE_ID=$(kubectl get cm $CM_CFG -n $(NAMESPACE) -o jsonpath='{.data.VAULT_APPROLE_ROLE_ID}' 2>/dev/null || true)
+            LIVE_VAULT_URI=$(kubectl get cm $CM_CFG -n $(NAMESPACE) -o jsonpath='{.data.VAULT_URI}' 2>/dev/null || true)
+            if [ -z "$LIVE_CLIENT_ID" ] || [ -z "$LIVE_ROLE_ID" ]; then
+              echo "##[error]ConfigMap $CM_CFG not found or incomplete — run shared-certificate-manager-cd (dpn-federator-certificate-manager) first."
+              exit 1
+            fi
+            case "$LIVE_VAULT_URI" in
+              "https://dpn-vault-https-$N."*) echo "  [OK] dpn-certificate-manager-$N uses $LIVE_VAULT_URI" ;;
+              *) echo "##[error]dpn-certificate-manager-$N itself points at $LIVE_VAULT_URI, not dpn-vault-https-$N — fix and redeploy it first."; exit 1 ;;
+            esac
+
+            # Rendered without the truststore password: the output is only inspected, never applied.
+            helm template $(RELEASE_PREFIX)-$N "$(CLIENT_HELM_DIR)" \
+              -n $(NAMESPACE) "${CLIENT_VALUES[@]}" > "$(Agent.TempDirectory)/rendered-demo-client-$N.yaml"
+            bash .pipelines/scripts/shared-dpn-wiring-check.sh \
+              --rendered "$(Agent.TempDirectory)/rendered-demo-client-$N.yaml" \
+              --instance "$N" \
+              --label dpn-demo-runner-client-$i \
+              --expect-client-id "$LIVE_CLIENT_ID" \
+              --expect-role-id "$LIVE_ROLE_ID"
+          done
+
+          # Every instance is run even if an earlier one fails, so one broken
+          # instance doesn't hide the result of the others; the step fails at the end.
+          FAILED_INSTANCES=""
+          for i in $(seq 2 $(TOTAL_DPN)); do
+            N=$(printf '%02d' "$i")
+            RELEASE="$(RELEASE_PREFIX)-$N"
+            CLIENT_VALUES=(-f "$(CLIENT_HELM_DIR)/$(VALUES_FILE)" -f "$(CLIENT_HELM_DIR)/$(VALUES_PREFIX)-$N.yaml")
+
+            echo "=========================================="
+            echo " SHARED DPN $N — HELM DEPLOY CLIENT JOB ($RELEASE)"
+            echo "=========================================="
+            helm upgrade --install $RELEASE "$(CLIENT_HELM_DIR)" \
+              -n $(NAMESPACE) "${CLIENT_ARGS[@]}" "${CLIENT_VALUES[@]}" \
+              --set job.vault.truststorePassword="$VAULT_TRUSTSTORE_PASSWORD"
+
+            JOB_BASE=$(helm get values $RELEASE -n $(NAMESPACE) -a -o json | jq -r '.job.name')
+            JOB_NAME="${JOB_BASE}-$(Build.BuildId)"
+            echo "Job created: ${JOB_NAME}"
+
+            echo "=========================================="
+            echo " SHARED DPN $N — WAIT FOR JOB COMPLETION"
+            echo "=========================================="
+            # Wait for either outcome so the logs are always printed below.
+            kubectl wait --for=condition=complete --timeout=600s \
+              job/${JOB_NAME} -n $(NAMESPACE) && JOB_RESULT=complete || JOB_RESULT=failed
+
+            echo "=========================================="
+            echo " SHARED DPN $N — DEMO RUNNER CLIENT OUTPUT"
+            echo "=========================================="
+            kubectl logs job/${JOB_NAME} -n $(NAMESPACE) --tail=-1 || \
+              echo "##[warning]Could not retrieve Job logs for ${JOB_NAME}"
+
+            if [ "$JOB_RESULT" != "complete" ]; then
+              echo "##[error]Shared DPN $N demo runner client Job ${JOB_NAME} did not complete successfully"
+              kubectl describe job/${JOB_NAME} -n $(NAMESPACE) || true
+              FAILED_INSTANCES="$FAILED_INSTANCES $N"
+            else
+              echo "SHARED DPN $N DEMO RUNNER CLIENT RUN COMPLETE"
+            fi
+          done
+
+          if [ -n "$FAILED_INSTANCES" ]; then
+            echo "##[error]Demo runner client Job failed for shared DPN instance(s):$FAILED_INSTANCES"
+            exit 1
+          fi
+          echo "=========================================="
+          echo " ALL SHARED DEMO RUNNER CLIENT RUNS COMPLETE"
+          echo "=========================================="
